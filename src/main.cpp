@@ -144,7 +144,7 @@ uint32_t heater_on_time_cum = 0;
 String station_name="";
 float pos_lat = 0;
 float pos_lon = 0;
-float altitude = 0;
+float altitude = -1;
 float mppt_voltage = 5.5;
 float heater_voltage = 4.5;
 int heading_offset = 0;
@@ -573,7 +573,7 @@ void read_bmp280(){
       next_baro_reading = 0;
       baro_temp = T;
       //baro = bmp.readPressure() / pow(1.0 - (altitude / 44330.0), 5.255)/100.0;
-      if (altitude > 0){
+      if (altitude > -1){
           baro_pressure = (P * pow(1-(0.0065*altitude/(temperature + (0.0065*altitude) + 273.15)),-5.257)); ///100.0;
       } else {
         baro_pressure = P; ///100.0;
@@ -1154,6 +1154,10 @@ void setup(){
   }
 
   if(settings_ok){
+    // Add altitude to station name, gets splittet by breezedude ogn parser
+      if(altitude > -1){
+        station_name+" (" + String(altitude) + "m)"; // Testation (1234m)
+      }
       setup_PM(is_davis6410); // powermanagement add || other sensors using counter
       if(use_wdt) {
         wdt_enable(WDT_PERIOD,false);
@@ -1218,7 +1222,7 @@ if(time()-last_call > 1000){
   }
 
   if(fanet_cooldown_ok() && broadcast_interval_info && ( (time()- last_msg_info) > broadcast_interval_info) ){
-    if(station_name.length() > 1){
+    if(station_name.length() > 1){ // replace with message length
       led_on();
       fanet.setRFMode(rfMode);
       fmac.setRegion(pos_lat,pos_lon);
