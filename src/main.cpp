@@ -941,6 +941,7 @@ bool apply_setting(char* settingName,  char* settingValue){
 
 void print_settings(){
   if(debug_enabled){
+    DEBUGSER.print("Name: "); DEBUGSER.println(station_name);
     DEBUGSER.print("Lon: "); DEBUGSER.println(pos_lon);
     DEBUGSER.print("Latt: "); DEBUGSER.println(pos_lat);
     DEBUGSER.print("Alt: "); DEBUGSER.println(altitude);
@@ -1156,7 +1157,7 @@ void setup(){
   if(settings_ok){
     // Add altitude to station name, gets splittet by breezedude ogn parser
       if(altitude > -1){
-        station_name+" (" + String(altitude) + "m)"; // Testation (1234m)
+        station_name += " (" + String(int(altitude)) + "m)"; // Testation (1234m)
       }
       setup_PM(is_davis6410); // powermanagement add || other sensors using counter
       if(use_wdt) {
@@ -1389,7 +1390,7 @@ void msc_flush_cb (void){
 bool msc_writable_callback(void){
   // true for writable, false for read-only
   if(!usb_connected){
-    log_i("USB Connected", time());
+    log_i("USB Connected: ", time());
   }
   usb_connected = true;
   return true;
