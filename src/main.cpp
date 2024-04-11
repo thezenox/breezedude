@@ -2,6 +2,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <Wire.h>
 #include <BMP280.h>
+#include <SPL06.h>
 #include <LibPrintf.h>
 #include <FanetLora.h>
 #include <SdFat.h>
@@ -81,13 +82,16 @@ Uart Serial2(&sercom1, PIN_SERCOM1_RX, PIN_SERCOM1_TX, SERCOM_RX_PAD_1, UART_TX_
 #define PIN_EN_HEATER 4 //D4/A8 PA08
 #define PIN_DAVIS_SPEED 17 // A3 17 PA04
 #define PIN_DAVIS_DIR 18 // A4 18 PA05
-#define PIN_DAVIS_POWER 9 // 9
+#define PIN_DAVIS_POWER 9 // 9 PA07 - power for direction potentiometer. Turn off if not used to save power
 
 // SERCOM 3 - I²C Barometer / Digipot
 #define PIN_SDA 26 // PA22
 #define PIN_SCL 27 // PA23
 
-BMP280 bmp; // DPS310 as replacement? or china Goertek SPL06-001
+// I2C Barometer
+BMP280 bmp; // Bosch BMP280
+SPL06 spl; // Goertek SPL06-001
+// DPS310 as alternative?
 
 // DAVIS6410 Pinout
 // Black - Wind speed contact (closure to ground)
@@ -120,7 +124,7 @@ uint8_t rfMode = 0x03;
 //              Bit 1 .... FANET Transmit enable
 //              Bit 2 .... Legacy Receive enable
 //              Bit 3 .... Legacy Transmit enable
-//              default 11 --> Fanet Receive/Transmit and Legacy-Transmit
+//              default 11/0x0B --> Fanet Receive/Transmit and Legacy-Transmit
 
 // Pulsecounter
 volatile uint32_t pulsecount =0; // pulses from wind speed sensor using reed switch
@@ -149,14 +153,35 @@ float mppt_voltage = 5.5;
 float heater_voltage = 4.5;
 int heading_offset = 0;
 
+enum BARO_CHIP{
+  BARO_NONE,
+  BARO_BMP280,
+  BARO_SPL06
+};
+
+// Gust History, for data transmission
+typedef struct g{
+  uint32_t time;
+  float val;
+} Gust;
+
+#define GUST_AGE 1000*60*15 // 15 min history
+#define GUST_HIST_STEP 1000*60*3 //ms history slots, 3min
+#define GUST_HIST_LEN 6 // number so slots. should match GUST_AGE / GUST_HIST_STEP
+Gust gust_history[GUST_HIST_LEN]; // gust ringbuffer
+uint8_t gust_hist_pos = 0; // current position in ringbuffer
+
 // Sensor selction
 bool is_ws80 = false;
 bool is_davis6410 = false;
-bool is_bmp280 = false;
+bool is_baro = false;
 bool is_heater = false;
 bool is_gps = false;
 bool testmode = false; // send without weather station to check lora coverage
+bool is_beacon = false; // use as FANET/FLARM Beacon. requires GPS
 uint32_t gps_baud = 9600;
+BARO_CHIP baro_chip = BARO_NONE;
+uint32_t gust_age = GUST_AGE;
 
 bool settings_ok = false;
 uint32_t next_baro_reading = 0;
@@ -205,18 +230,6 @@ const char* wakeup_source_string [4] = {"NONE", "RTC", "EIC", "WDT"};
 bool pv_charging; // currently charging, state from pv charger
 bool pv_done; // battery fully charged, state from pv charger
 
-// Gust History, for data transmission
-typedef struct g{
-  uint32_t time;
-  float val;
-} Gust;
-
-#define GUST_AGE 1000*60*15 // 15 min history
-#define GUST_HIST_STEP 1000*60*3 //ms history slots, 3min
-#define GUST_HIST_LEN 6 // number so slots. should match GUST_AGE / GUST_HIST_STEP
-Gust gust_history[GUST_HIST_LEN]; // gust ringbuffer
-uint8_t gust_hist_pos = 0; // current position in ringbuffer
-
 // Data histroy, mainly for heater control
 typedef struct h{
   bool set = false;
@@ -259,17 +272,57 @@ void log_i(const char * msg){
   if(debug_enabled){
     DEBUGSER.print(msg);
   }
+  if(usb_connected){
+    Serial.print(msg);
+  }
 }
 void log_i(const char * msg, uint32_t num){
   if(debug_enabled){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
   }
+  if(usb_connected){
+    Serial.print(msg);
+    Serial.println(num);
+  }
+}
+void log_i(const char * msg, int32_t num){
+  if(debug_enabled){
+    DEBUGSER.print(msg);
+    DEBUGSER.println(num);
+  }
+  if(usb_connected){
+    Serial.print(msg);
+    Serial.println(num);
+  }
+}
+void log_i(const char * msg, int num){
+  if(debug_enabled){
+    DEBUGSER.print(msg);
+    DEBUGSER.println(num);
+  }
+  if(usb_connected){
+    Serial.print(msg);
+    Serial.println(num);
+  }
+}
+void log_i(const char * msg, float num){
+  if(debug_enabled){
+    DEBUGSER.print(msg);
+    DEBUGSER.println(num);
+  }
+  if(usb_connected){
+    Serial.print(msg);
+    Serial.println(num);
+  }
 }
 
 void log_e(const char * msg){
   if(errors_enabled){
     DEBUGSER.print(msg);
+  }
+  if(usb_connected){
+    Serial.print(msg);
   }
 }
 
@@ -322,6 +375,7 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
   char value [BUFFLEN];
   memset(name,'\0',BUFFLEN);
   memset(value,'\0',BUFFLEN);
+  bool literal = false; // 
   char* ptr = name; //start with name filed
   int c = 0; // counter
   int oc= 0; // output counter
@@ -335,8 +389,9 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
       case '>': cont = false; break;
       case '!':  cont = false; break;
       case '#':  cont = false; break;
-      case ' ':  break;
+      case '?':  literal = true; break; // enable literal mode
       case '=':  if(oc && (ptr == name) ){ *(ptr+oc) = '\0'; ptr = value; oc = 0;} break; // switch to value
+      case ' ':  if(!literal) {break;} // avoid removing whitespaces from name
       default:   *(ptr+oc) = in[c]; oc++; break; // copy char
     }
     c++;
@@ -386,8 +441,8 @@ float get_gust_from_hist(uint32_t age){
 bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
   if(strcmp(key,"WindDir")==0) {wind_dir_raw = atoi(value); return true;}
-  if(strcmp(key,"WindSpeed")==0) {wind_speed = atof(value); return true;}
-  if(strcmp(key,"WindGust")==0) {wind_gust = atof(value); add_gust_history(wind_gust); return true;}
+  if(strcmp(key,"WindSpeed")==0) {wind_speed = atof(value)*3.6; return true;}
+  if(strcmp(key,"WindGust")==0) {wind_gust = atof(value)*3.6; add_gust_history(wind_gust); return true;}
   if(strcmp(key,"Temperature")==0) {temperature = atof(value); return true;}
   if(strcmp(key,"Humi")==0) {humidity = atoi(value); return true;}
   if(strcmp(key,"Light")==0) {light_lux = atoi(value); return true;}
@@ -395,6 +450,7 @@ bool set_value(char* key,  char* value){
   if(strcmp(key,"BatVoltage")==0) {
     ws80_vcc = atof(value); 
     last_ws80_data =time();
+    //log_i("WS80 data complete\r\n");
     return true;
   }
   return false;
@@ -439,7 +495,9 @@ void mcp4652_write(unsigned char addr, unsigned char value){
 	Wire.beginTransmission(MCP4652_I2C_ADDR);
 	Wire.write(cmd_byte);
 	Wire.write(value);
-	Wire.endTransmission();
+	if(Wire.endTransmission() != 0){
+    log_e("Faild to set MCP4652\r\n");
+  }
 }
 
 // Write both outputs of digipot
@@ -559,25 +617,43 @@ uint32_t history_sum_wind(int len){
 void baro_start_reading(){
   //sercom3.resetWIRE();
   //Wire.begin();
-  next_baro_reading = time() + bmp.startMeasurment();
+  if(baro_chip == BARO_BMP280){ next_baro_reading = time() + bmp.startMeasurment();}
+  if(baro_chip == BARO_SPL06){ 
+    spl.start_measure();
+    next_baro_reading = time() + 40;
+    }
 }
 
 // read value of baro, needs baro_start_reading in advance
-void read_bmp280(){
-  if(next_baro_reading && (time() > next_baro_reading)){
-    uint8_t result;
-    double T,P;
-    result = bmp.getTemperatureAndPressure(T,P);
-    if(result!=0){
-      //Wire.end();
-      next_baro_reading = 0;
-      baro_temp = T;
-      //baro = bmp.readPressure() / pow(1.0 - (altitude / 44330.0), 5.255)/100.0;
-      if (altitude > -1){
-          baro_pressure = (P * pow(1-(0.0065*altitude/(temperature + (0.0065*altitude) + 273.15)),-5.257)); ///100.0;
-      } else {
-        baro_pressure = P; ///100.0;
+void read_baro(){
+  bool data_ok = false;
+  double T,P;
+
+  if(baro_chip == BARO_BMP280){
+    if(next_baro_reading && (time() > next_baro_reading)){
+      uint8_t result = bmp.getTemperatureAndPressure(T,P);
+      if(result!=0){
+        data_ok = true;
       }
+    }
+  }
+
+    if(baro_chip == BARO_SPL06){
+    if(next_baro_reading && (time() > next_baro_reading)){
+      P = spl.get_pressure();
+      T = spl.get_temp_c();
+      spl.sleep();
+      if(P > 0){data_ok = true;}
+    }
+  }
+
+  if(data_ok){
+    baro_temp = T;
+    next_baro_reading = 0;
+    if (altitude > -1){
+        baro_pressure = (P * pow(1-(0.0065*altitude/(temperature + (0.0065*altitude) + 273.15)),-5.257)); ///100.0;
+    } else {
+      baro_pressure = P; ///100.0;
     }
   }
 }
@@ -755,7 +831,7 @@ void wakeup(){
   wakeup_source = WAKEUP_NONE;
 
   get_solar_charger_state();
-  if(is_bmp280){
+  if(is_baro){
     baro_start_reading(); // request data aquisition, will be read later
   }
 
@@ -904,8 +980,8 @@ wakeup();
 
 // Settings ----------------------------------------------------------------------------------------------------------------------
 bool apply_setting(char* settingName,  char* settingValue){
-  if(debug_enabled){("%s = %s\r\n",settingName, settingValue);}
-  log_flush();
+  if(debug_enabled){printf("%s = %s\r\n",settingName, settingValue); log_flush();}
+  
   if(strcmp(settingName,"NAME")==0) {station_name = settingValue; return true;}
   if(strcmp(settingName,"LON")==0) {pos_lon = atof(settingValue); return true;}
   if(strcmp(settingName,"LAT")==0) {pos_lat = atof(settingValue); return true;}
@@ -914,12 +990,14 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"V_HEATER")==0) {heater_voltage  = atof(settingValue); return true;}
   if(strcmp(settingName,"V_MPPT")==0) { mppt_voltage = atof(settingValue); return true;}
   if(strcmp(settingName,"HEADING_OFFSET")==0) {heading_offset = atoi(settingValue); return true;}
+  if(strcmp(settingName,"GUST_AGE")==0) {gust_age = atoi(settingValue)*1000; return true;}
   
   if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {broadcast_interval_weather = atoi(settingValue)*1000; return true;}
   if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0) {broadcast_interval_name = atoi(settingValue)*1000; return true;}
   if(strcmp(settingName,"BROADCAST_INTERVAL_INFO")==0) {broadcast_interval_info = atoi(settingValue)*1000; return true;}
 
-  if(strcmp(settingName,"SENSOR_BMP280")==0) {is_bmp280 = atoi(settingValue); return true;}
+  if(strcmp(settingName,"SENSOR_BARO")==0) {is_baro = atoi(settingValue); return true;}
+  if(strcmp(settingName,"SENSOR_BMP280")==0) {is_baro = atoi(settingValue); return true;} // for backward compatibility, may be removed some time
   if(strcmp(settingName,"SENSOR_DAVIS6410")==0) {is_davis6410 = atoi(settingValue); return true;}
   if(strcmp(settingName,"SENSOR_WS80")==0) {is_ws80 = atoi(settingValue); return true;}
 
@@ -933,49 +1011,53 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"WDT")==0) {use_wdt = atoi(settingValue); return true;}
   if(strcmp(settingName,"DIV_CPU_SLOW")==0) {div_cpu_slow = atoi(settingValue); return true;}
 
+  if(strcmp(settingName,"GPS_BEACON")==0) {is_beacon = atoi(settingValue); return true;}
+
 // Test commands
   if(strcmp(settingName,"TEST_HEATER")==0) {test_heater = atoi(settingValue); return true;}
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return true;}
+  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return true;}
+  if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return true;}
   return false;
 }
 
 void print_settings(){
   if(debug_enabled){
-    DEBUGSER.print("Name: "); DEBUGSER.println(station_name);
-    DEBUGSER.print("Lon: "); DEBUGSER.println(pos_lon);
-    DEBUGSER.print("Latt: "); DEBUGSER.println(pos_lat);
-    DEBUGSER.print("Alt: "); DEBUGSER.println(altitude);
-    DEBUGSER.print("Heater Voltage: "); DEBUGSER.println(heater_voltage);
-    DEBUGSER.print("MPPT Voltage: "); DEBUGSER.println(mppt_voltage);
-    DEBUGSER.print("Heading Offset: "); DEBUGSER.println(heading_offset); 
-    DEBUGSER.print("BROADCAST_INTERVAL: "); DEBUGSER.println(broadcast_interval_weather);
-    DEBUGSER.flush();
+    log_i("Name: "); log_i(station_name.c_str());
+    log_i("Lon: ", pos_lon);
+    log_i("Lat: ", pos_lat);
+    log_i("Alt: ", altitude);
+    log_i("Heater Voltage: ", heater_voltage);
+    log_i("MPPT Voltage: ", mppt_voltage);
+    log_i("Heading Offset: ", heading_offset); 
+    log_i("BROADCAST_INTERVAL: ", broadcast_interval_weather);
+    log_flush();
   }
 }
 void print_data(){
   if(debug_enabled){
-    DEBUGSER.print("\r\nmillis: "); DEBUGSER.println(millis()); 
-    DEBUGSER.print("time: "); DEBUGSER.println(time()); 
-    DEBUGSER.print("Wind dir_raw: "); DEBUGSER.println(wind_dir_raw);
-    DEBUGSER.print("Wind Heading: "); DEBUGSER.println(wind_heading);
-    DEBUGSER.print("Wind Speed: "); DEBUGSER.println(int(wind_speed));
-    DEBUGSER.print("Wind Gust: "); DEBUGSER.println(int(wind_gust));
-    DEBUGSER.print("Temp: "); DEBUGSER.println(int(temperature));
-    DEBUGSER.print("Humd: "); DEBUGSER.println(humidity);
-    if(is_bmp280){
-    DEBUGSER.print("Baro: "); DEBUGSER.println(int(baro_pressure));
-    DEBUGSER.print("PCB_Temp: "); DEBUGSER.println(int(baro_temp));
+    log_i("\r\nmillis: ", millis()); 
+    log_i("time: ", time()); 
+    log_i("Wind dir_raw: ", wind_dir_raw);
+    log_i("Wind Heading: ", wind_heading);
+    log_i("Wind Speed: ", wind_speed);
+    log_i("Wind Gust: ", wind_gust);
+    log_i("Temp: ", temperature);
+    log_i("Humd: ", humidity);
+    if(is_baro){
+    log_i("Baro: ", baro_pressure);
+    log_i("PCB_Temp: ", baro_temp);
     }
     if(is_ws80) {
-      DEBUGSER.print("VCC: "); DEBUGSER.println(int(ws80_vcc*100));
-      DEBUGSER.print("LUX: "); DEBUGSER.println(light_lux);
-      DEBUGSER.print("UV: "); DEBUGSER.println(uv_level);
+      log_i("VCC: ", ws80_vcc);
+      log_i("LUX: ", light_lux);
+      log_i("UV: ", uv_level);
     }
-    DEBUGSER.print("\r\n");
-    DEBUGSER.print("V_Bat: "); DEBUGSER.println(int(batt_volt*100));
-    DEBUGSER.print("Bat_perc: "); DEBUGSER.println(batt_perc);
-    DEBUGSER.print("PV_charge: "); DEBUGSER.println(pv_charging);
-    DEBUGSER.print("PV_done: "); DEBUGSER.println(pv_done);
+    log_i("\r\n");
+    log_i("V_Bat: ", batt_volt);
+    log_i("Bat_perc: ", batt_perc);
+    log_i("PV_charge: ", pv_charging);
+    log_i("PV_done: ", pv_done);
   }
 }
 
@@ -1011,8 +1093,9 @@ bool parse_file(char * filename){
         process_line(filebuffer, co, &apply_setting);
         f.close();
         //DEBUGSER.println("file closed");
-
-        ret = true;
+        if(pos_lat != 0 && pos_lon != 0){
+          ret = true;
+        }
         led_off(); // if LED stay on, settings failed
     }else {
       log_i("File not exists\r\n");
@@ -1054,7 +1137,7 @@ void send_msg_weather(){
   fanet.setRFMode(rfMode);
   fmac.setRegion(pos_lat,pos_lon);
 
-  wind_gust = get_gust_from_hist(GUST_AGE);
+  wind_gust = get_gust_from_hist(gust_age);
   wind_heading = wind_dir_raw + heading_offset;
   if(wind_heading > 359){ wind_heading -=360;}
   if(wind_heading < 0){ wind_heading +=360;}
@@ -1069,7 +1152,7 @@ void send_msg_weather(){
   fanetWeatherData.temp = temperature;
   fanetWeatherData.bHumidity = true;
   fanetWeatherData.Humidity = humidity;
-  if(is_bmp280){
+  if(is_baro){
     fanetWeatherData.bBaro = true;
     fanetWeatherData.Baro = baro_pressure;    
   } else {
@@ -1096,12 +1179,38 @@ void send_msg_weather(){
   led_off();
 }
 
+void send_tracking(){
+    led_on();
+    rfMode = 0x0B; // Enable FASNET & FLARM
+    fanet.setRFMode(rfMode);
+    fmac.setRegion(pos_lat,pos_lon);
+
+    FanetLora::trackingData data;
+    data.timestamp = 0;
+    data.type =  FanetLora::aircraft_t::paraglider; //tracking-type (11... online tracking 7X .... ground tracking)
+    data.devId;
+    data.lat = pos_lat; //latitude
+    data.lon = pos_lon; //longitude
+    data.altitude = altitude; //altitude [m]
+    data.aircraftType; //
+    data.addressType;
+    data.speed = tinyGps.speed.kmph(); //km/h
+    data.climb; //m/s
+    data.heading = tinyGps.course.deg(); //deg
+    data.OnlineTracking = true;
+    //data.rssi; //rssi
+    //data.snr; //signal to noise ratio
+
+    fanet.writeMsgType1(&data);
+    led_off();
+}
+
 // check if everything is ok to send the wather data now
 bool allowed_to_send_weather(){
   bool ok = settings_ok;
 
   if (ok){
-    if(is_bmp280){ok &= (next_baro_reading == 0);}
+    if(is_baro){ok &= (next_baro_reading == 0);}
     if(is_ws80) { ok &= ((last_ws80_data && (time()- last_ws80_data < 1000)) || testmode); } // only send if weather data is up to date or testmode is enabled
     if(is_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
   }
@@ -1163,15 +1272,24 @@ void setup(){
       if(use_wdt) {
         wdt_enable(WDT_PERIOD,false);
       }
-    if(is_bmp280){
-      if(!bmp.begin()){
-        is_bmp280 = false;
-        log_e("BMP280 not found\r\n");
-      }else{
+    if(is_baro){
+      bool baro_ok = false;
+      if(!baro_ok && bmp.begin()){
+        baro_ok = true;
+        baro_chip = BARO_BMP280;
         bmp.setOversampling(4);
-        log_i("BMP280 setup ok\r\n");
+      }
+      if(!baro_ok && spl.begin(0x77)){
+        baro_ok = true;
+        baro_chip = BARO_SPL06;
+        log_i("SPL06 setup ok\r\n");
+      }
+      if(!baro_ok){
+        log_e("Baro not found\r\n");
+        is_baro = false;
       }
     }
+  
     mcp4652_write(WRITE_WIPER_MPPT, calc_cn3791(mppt_voltage));
     print_settings();
     apply_mcp4652();
@@ -1205,7 +1323,7 @@ if(time()-last_call > 1000){
 }
 
   if(is_heater){run_heater();}
-  if(is_bmp280){read_bmp280();}
+  if(is_baro){read_baro();}
   if(is_gps){read_gps();}
 
   if(fanet_cooldown_ok() && broadcast_interval_name && ( (time()- last_msg_name) > broadcast_interval_name) ){ // once a hour
