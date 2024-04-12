@@ -21,4 +21,8 @@ uint32_t read_pulse_counter();
 void reset_pulse_counter();
 void stop_pulse_counter();
 
+void setup_rtc_time_counter();
+uint32_t read_time_counter();
+void reset_time_counter();
+
 #endif

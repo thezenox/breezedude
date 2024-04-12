@@ -162,14 +162,17 @@ enum BARO_CHIP{
 // Gust History, for data transmission
 typedef struct g{
   uint32_t time;
-  float val;
-} Gust;
+  uint32_t gust;
+  uint32_t wind;
+  int dir_raw;
+} WindSample;
 
-#define GUST_AGE 1000*60*15 // 15 min history
-#define GUST_HIST_STEP 1000*60*3 //ms history slots, 3min
-#define GUST_HIST_LEN 6 // number so slots. should match GUST_AGE / GUST_HIST_STEP
-Gust gust_history[GUST_HIST_LEN]; // gust ringbuffer
-uint8_t gust_hist_pos = 0; // current position in ringbuffer
+#define WIND_AGE 1000*30 // 30s history
+#define GUST_AGE 1000*60*10 // 10 min history
+#define WIND_HIST_STEP 1000*4 //ms history slots, 22 sek
+#define WIND_HIST_LEN 150 // number so slots. should match GUST_AGE / GUST_HIST_STEP
+WindSample wind_history[WIND_HIST_LEN]; // gust ringbuffer
+uint8_t wind_hist_pos = 0; // current position in ringbuffer
 
 // Sensor selction
 bool is_ws80 = false;
@@ -181,6 +184,7 @@ bool testmode = false; // send without weather station to check lora coverage
 bool is_beacon = false; // use as FANET/FLARM Beacon. requires GPS
 uint32_t gps_baud = 9600;
 BARO_CHIP baro_chip = BARO_NONE;
+uint32_t wind_age = WIND_AGE; 
 uint32_t gust_age = GUST_AGE;
 
 bool settings_ok = false;
@@ -245,6 +249,7 @@ typedef struct h{
 History history[HISTORY_LEN];
 int hist_count =0;
 uint32_t last_history =0;
+uint32_t sleep_offset =0; //time passed since last increment of time(). used for ws80 deepsleep reading time offset from rtc
 
 // Function prototypes
 bool setup_flash();
@@ -265,7 +270,7 @@ bool setup_flash();
 
 // get current millis since reset, including time spend in deepsleep. Missing time waiting for UART ws80 sensor
 uint32_t time(){
-  return millis() + sleeptime_cum;
+  return millis() + sleeptime_cum + sleep_offset;
 }
 
 void log_i(const char * msg){
@@ -402,47 +407,104 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
   return false;
 }
 
-// Adds/updates gust value in ringbuffer
-void add_gust_history(float val){
-  // Agg slot time is over, switch to next
-  if( (time() - gust_history[gust_hist_pos].time) > GUST_HIST_STEP){
-    gust_hist_pos++;
-    if(gust_hist_pos == GUST_HIST_LEN){
-      gust_hist_pos = 0;
+void check_wind_hist_bin(){
+  if( wind_history[wind_hist_pos].time && (time() - wind_history[wind_hist_pos].time) > WIND_HIST_STEP){
+    // copy old values if there is an read error from serial to avoid 0 to be included in average
+    uint32_t g = wind_history[wind_hist_pos].gust;
+    uint32_t w = wind_history[wind_hist_pos].wind;
+    int d = wind_history[wind_hist_pos].dir_raw;
+
+    wind_hist_pos++;
+    if(wind_hist_pos == WIND_HIST_LEN){
+      wind_hist_pos = 0;
     }
     // reset values if already set (overwrite ringbuffer)
-    gust_history[gust_hist_pos].val = 0;
-    gust_history[gust_hist_pos].time = 0;
-  }
-  if(val > gust_history[gust_hist_pos].val){
-    gust_history[gust_hist_pos].val = val;
-    gust_history[gust_hist_pos].time = time();
+    wind_history[wind_hist_pos].gust = g;
+    wind_history[wind_hist_pos].wind = w;
+    wind_history[wind_hist_pos].dir_raw = d;
+    wind_history[wind_hist_pos].time = 0; // will be set by every add_... 
   }
 }
 
-// gets the highest gust value in ringbuffer, not older than age
-float get_gust_from_hist(uint32_t age){
-  float max_gust = 0;
+// Adds/updates wind value in ringbuffer
+void add_wind_history_wind(float val_wind){
+  check_wind_hist_bin(); // Agg slot time is over, switch to next
+  wind_history[wind_hist_pos].wind = val_wind*10;
+  wind_history[wind_hist_pos].time = time();
+}
 
-  uint8_t p = gust_hist_pos;
-  for( int i = 0; i < GUST_HIST_LEN; i++){
-    if(p == GUST_HIST_LEN){
-      p -= GUST_HIST_LEN;
+// Adds/updates gust value in ringbuffer
+void add_wind_history_gust(float val_gust){
+  check_wind_hist_bin(); // Agg slot time is over, switch to next
+  wind_history[wind_hist_pos].gust = abs(val_gust)*10;
+  wind_history[wind_hist_pos].time = time();
+}
+
+// Adds/updates dir value in ringbuffer
+void add_wind_history_dir(int val_dir){
+  check_wind_hist_bin(); // Agg slot time is over, switch to next
+  wind_history[wind_hist_pos].dir_raw = val_dir;
+  wind_history[wind_hist_pos].time = time();
+}
+
+// gets the highest wind value in ringbuffer, not older than age
+WindSample get_wind_from_hist(uint32_t age){
+  WindSample ret = {0,0,0,0};
+
+  float y_part = 0;
+  float x_part = 0;
+  int samplecount =0;
+
+  uint8_t p = wind_hist_pos;
+  for( int i = 0; i < WIND_HIST_LEN; i++){
+    if(p == WIND_HIST_LEN){
+      p -= WIND_HIST_LEN;
     }
-    if( ( gust_history[p].time && (time()- gust_history[p].time) < age) && (gust_history[p].val > max_gust) ){
-      max_gust = gust_history[p].val;
+    if( ( wind_history[p].time && (time()- wind_history[p].time) < age)){
+      ret.wind += wind_history[p].wind;
+      ret.gust += wind_history[p].gust;
+      x_part += cos (wind_history[p].dir_raw * M_PI / 180);
+      y_part += sin (wind_history[p].dir_raw * M_PI / 180);
+      samplecount++;
     }
     p++;
   }
-  return max_gust;
+  if(samplecount > 0){
+    ret.dir_raw = atan2 (y_part / samplecount, x_part / samplecount) * 180 / M_PI;
+    if(ret.dir_raw <0){ ret.dir_raw +=360;}
+
+   // log_i("Sum Wind: ", ret.wind);
+   // log_i("Sum Gust: ", ret.gust);
+   // log_i("Samples: ", samplecount);
+    ret.wind /= samplecount;
+    ret.gust /= samplecount;
+  } else {
+    log_e("Samplecount is 0\r\n");
+  }
+  return ret;
+}
+
+float get_gust_from_hist(uint32_t age){
+  uint32_t ret=0;
+  uint8_t p = wind_hist_pos;
+  for( int i = 0; i < WIND_HIST_LEN; i++){
+    if(p == WIND_HIST_LEN){
+      p -= WIND_HIST_LEN;
+    }
+    if(( wind_history[p].time && (time()- wind_history[p].time) < age) && wind_history[p].gust > ret){
+       ret = wind_history[p].gust;
+    }
+    p++;
+  }
+  return ret/10.0;
 }
 
 // Set measurement value read from WS80 UART
 bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
-  if(strcmp(key,"WindDir")==0) {wind_dir_raw = atoi(value); return true;}
-  if(strcmp(key,"WindSpeed")==0) {wind_speed = atof(value)*3.6; return true;}
-  if(strcmp(key,"WindGust")==0) {wind_gust = atof(value)*3.6; add_gust_history(wind_gust); return true;}
+  if(strcmp(key,"WindDir")==0) {wind_dir_raw = atoi(value); add_wind_history_dir(wind_dir_raw); return true;}
+  if(strcmp(key,"WindSpeed")==0) {wind_speed = atof(value)*3.6; add_wind_history_wind(wind_speed); return true;}
+  if(strcmp(key,"WindGust")==0) {wind_gust = atof(value)*3.6; add_wind_history_gust(wind_gust); return true;}
   if(strcmp(key,"Temperature")==0) {temperature = atof(value); return true;}
   if(strcmp(key,"Humi")==0) {humidity = atoi(value); return true;}
   if(strcmp(key,"Light")==0) {light_lux = atoi(value); return true;}
@@ -663,8 +725,9 @@ void read_ws80(){
   static char buffer [BUFFERSIZE];
   static int co = 0;
   uint32_t last_data = micros();
+  uint32_t cpy_last_ws80_data = last_ws80_data;
 
-  while(!last_ws80_data && (micros()- last_data < 500)){
+  while( cpy_last_ws80_data == last_ws80_data &&(micros()- last_data < 500)){ // 
     while (WS80_UART.available()){
       buffer[co] = WS80_UART.read();
       last_data = micros();
@@ -681,7 +744,8 @@ void read_ws80(){
         return;
       }
     }
-  }
+  } 
+  //log_i("Out of data\r\n\n");
 }
 
 // Davis 6410 Sensor ----------------------------------------------------------------------------------------------------------------------
@@ -711,12 +775,14 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   log_i("delta_t: ", dmillis);
   log_i("pulses: ", pulses); 
   wind_dir_raw = read_wind_dir();
+  add_wind_history_dir(wind_dir_raw);
   
   if(is_davis6410){
     wind_speed = (float) pulses * 1.609 * (2250.0/((float)dmillis+1) ); // avoid div/0
   }
   // ... other analog sensors
-  add_gust_history(wind_speed);
+  add_wind_history_wind(wind_speed);
+  add_wind_history_gust(wind_speed);
   save_history();
 }
 
@@ -734,7 +800,7 @@ void run_heater(){
     read_batt_perc(); // get new voltage if outdated
     uint32_t light_hist= history_sum_light(24);
     uint32_t wind_hist= history_sum_wind(24);
-    log_i("# Heater Info\r\n");
+    //log_i("# Heater Info\r\n");
     log_i("light_hist: ", light_hist);
     log_i("wind_hist: ",wind_hist);
     if(h_switch_on_time){
@@ -805,23 +871,33 @@ void run_heater(){
 
 // dummy function
 void wakeup_2(){
+  wakeup_source = WAKEUP_EIC;
 }
 
 // enable interrupt on uart rx pin and wait for data
 void sleep_til_serial_data(){
-  attachInterruptWakeup(PIN_RX, wakeup_2, CHANGE, false);
-  if(use_wdt) {
-    wdt_disable();
-  }
+  //log_i("sleep\r\n"); log_flush();
+  attachInterruptWakeup(PIN_RX, wakeup_2, FALLING, false);
   sleep(false);
-  detachInterrupt(PIN_RX);
   WS80_UART.begin(115200*div_cpu); // begin again, because we used the RX pin as wakeup interrupt.
+  detachInterrupt(PIN_RX);
+  sleep_offset = read_time_counter();
+  //log_i("Actual_sleep: ", sleep_offset);
+  //log_i("Wakeup_source: "); log_i(wakeup_source_string[wakeup_source]);log_i("\r\n");
 
-  if(use_wdt) {
-    wdt_enable(WDT_PERIOD,false);
-  }
   //Wire.setClock(100000);
 }
+
+void get_ws80_deepsleep(){
+  // WS80 sensor serial data read. Enable pin interrupt and wait for RX
+// sleep until new sensor reading.  (230µA avg, no bmp, no rf module, no sensor)
+  
+    //last_ws80_data = 0;
+    //while(!last_ws80_data){
+      sleep_til_serial_data();
+      read_ws80();
+}
+
 
 // called after sleep
 void wakeup(){
@@ -835,16 +911,10 @@ void wakeup(){
     baro_start_reading(); // request data aquisition, will be read later
   }
 
-// WS80 sensor serial data read. Enable pin interrupt and wait for RX
-// sleep until new sensor reading.  (230µA avg, no bmp, no rf module, no sensor)
-  if(is_ws80 && settings_ok && (time()> 2500)  && !usb_connected && !no_sleep && !testmode){
-    last_ws80_data = 0;
-    while(!last_ws80_data){
-      sleep_til_serial_data();
-      read_ws80();
-    }
-    save_history();
-  }
+ // if(is_ws80) {
+  //  get_ws80_deepsleep();
+  //  }
+
   pinMode(PIN_V_READ_TRIGGER, OUTPUT); // prepare voltage measurement, charge trigger cap
   digitalWrite(PIN_V_READ_TRIGGER,1);
   sleep_allowed = time() + 6000; // go back to sleep after 6 secs as fallback
@@ -952,8 +1022,15 @@ void go_sleep(){
 
 // UART sensor, just sleep
   } else { // no pulse counting anemometer, no interrupts
+    reset_time_counter();
     actual_sleep = rtc_sleep_cfg(time_to_sleep);
-    sleep(false); // use rtc to sleep
+    //sleep(false); // use rtc to sleep
+    if(settings_ok && (time()> 2500)  && !usb_connected && !no_sleep && !testmode){
+      while(wakeup_source != WAKEUP_RTC){
+        get_ws80_deepsleep();
+      }
+    }
+    sleep_offset = 0; // reset temporary offset
     sleeptime_cum += actual_sleep;
   }
   
@@ -991,6 +1068,7 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"V_MPPT")==0) { mppt_voltage = atof(settingValue); return true;}
   if(strcmp(settingName,"HEADING_OFFSET")==0) {heading_offset = atoi(settingValue); return true;}
   if(strcmp(settingName,"GUST_AGE")==0) {gust_age = atoi(settingValue)*1000; return true;}
+  if(strcmp(settingName,"WIND_AGE")==0) {wind_age = atoi(settingValue)*1000; return true;}
   
   if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {broadcast_interval_weather = atoi(settingValue)*1000; return true;}
   if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0) {broadcast_interval_name = atoi(settingValue)*1000; return true;}
@@ -1023,14 +1101,15 @@ bool apply_setting(char* settingName,  char* settingValue){
 
 void print_settings(){
   if(debug_enabled){
-    log_i("Name: "); log_i(station_name.c_str());
+    log_i("Name: "); log_i(station_name.c_str()); log_i("\r\n");
     log_i("Lon: ", pos_lon);
     log_i("Lat: ", pos_lat);
     log_i("Alt: ", altitude);
+    log_flush();
     log_i("Heater Voltage: ", heater_voltage);
     log_i("MPPT Voltage: ", mppt_voltage);
     log_i("Heading Offset: ", heading_offset); 
-    log_i("BROADCAST_INTERVAL: ", broadcast_interval_weather);
+    log_i("Broadcast Interval Weather: ", broadcast_interval_weather);
     log_flush();
   }
 }
@@ -1137,7 +1216,11 @@ void send_msg_weather(){
   fanet.setRFMode(rfMode);
   fmac.setRegion(pos_lat,pos_lon);
 
+  WindSample current_wind = get_wind_from_hist(wind_age);
+
   wind_gust = get_gust_from_hist(gust_age);
+  wind_speed = current_wind.wind/10.0;
+  wind_dir_raw = current_wind.dir_raw;
   wind_heading = wind_dir_raw + heading_offset;
   if(wind_heading > 359){ wind_heading -=360;}
   if(wind_heading < 0){ wind_heading +=360;}
@@ -1177,6 +1260,7 @@ void send_msg_weather(){
   fanet.writeMsgType4(&fanetWeatherData);
   print_data();
   led_off();
+  save_history(); // only save history ond send
 }
 
 void send_tracking(){
@@ -1208,10 +1292,11 @@ void send_tracking(){
 // check if everything is ok to send the wather data now
 bool allowed_to_send_weather(){
   bool ok = settings_ok;
+  //log_i("WS80 data age: ", time()- last_ws80_data);
 
   if (ok){
     if(is_baro){ok &= (next_baro_reading == 0);}
-    if(is_ws80) { ok &= ((last_ws80_data && (time()- last_ws80_data < 1000)) || testmode); } // only send if weather data is up to date or testmode is enabled
+    if(is_ws80) { ok &= (last_ws80_data || testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
     if(is_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
   }
   return ok;
@@ -1269,8 +1354,9 @@ void setup(){
         station_name += " (" + String(int(altitude)) + "m)"; // Testation (1234m)
       }
       setup_PM(is_davis6410); // powermanagement add || other sensors using counter
-      if(use_wdt) {
-        wdt_enable(WDT_PERIOD,false);
+      wdt_enable(WDT_PERIOD,false); // setup clocks
+      if(!use_wdt) {
+        wdt_disable();
       }
     if(is_baro){
       bool baro_ok = false;
@@ -1296,6 +1382,7 @@ void setup(){
   }
   if(is_ws80){
     WS80_UART.begin(115200);
+    setup_rtc_time_counter();
   }
   if(is_gps){
     GPS_SERIAL.begin(gps_baud);
@@ -1305,6 +1392,12 @@ void setup(){
 // init history array
   for( int i = 0; i< HISTORY_LEN; i++){
     history[i].set = false;
+  }
+  for( int i=0; i< WIND_HIST_LEN; i++){
+    wind_history[i].time = 0;
+    wind_history[i].gust = 0;
+    wind_history[i].dir_raw = 0;
+    wind_history[i].wind = 0;
   }
   wakeup();
 }
@@ -1354,13 +1447,19 @@ if(time()-last_call > 1000){
     }
   }
 
-  if(fanet_cooldown_ok() && broadcast_interval_weather && ( (time()- last_msg_weather) > broadcast_interval_weather) ){
+  if(fanet_cooldown_ok() && !usb_connected && broadcast_interval_weather && ( (time()- last_msg_weather) > broadcast_interval_weather) ){ // do not send with usb connectetd = no sleeep = no ws80 data
     if( allowed_to_send_weather() ){
       read_batt_perc();
       send_msg_weather();
       last_fnet_send = time();
       last_msg_weather = time();
       send_active = time();
+    } else {
+     // if(time()- last_ws80_data > 7000){
+     //   log_e("Weatherdata not ready\r\n");
+      //  sleep_allowed = time() + (0);
+     // }
+      
     }
   }
 
@@ -1403,7 +1502,10 @@ if(time()-last_call > 1000){
   // during Dev
   if(usb_connected){
     read_serial_cmd(); // read setting values from serial for testing
-    if(time() > 15*60*1000){ usb_connected = false;} // keep usb alive for 15 min
+    if(time() > 15*60*1000){
+      usb_connected = false;
+      NVIC_SystemReset();
+      } // keep usb alive for 15 min
   }
 
   if(use_wdt){

@@ -300,7 +300,7 @@ void setup_PM(bool en_counter){
 
 void setup_pulse_counter(){
   uint32_t ulPin = 17; // PA04 PIN_DAVIS_SPEED, Uses Interrupt 4
-
+  configGCLK6(true);
   // https://forum.arduino.cc/t/arduino-zero-sam-d21-hardware-counter-as-simple-input-counter-intialization/630306/2
   // Generic Clock /////////////////////////////////////////////////////////////////////////
  
@@ -442,3 +442,50 @@ void stop_pulse_counter(){
 // point all unused peripherals to dead clocks like so: // https://forum.arduino.cc/t/reducing-power-consumption/412345/18
 // GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_USB | GCLK_CLKCTRL_GEN_GCLK4;
 // GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_EVSYS_0 | GCLK_CLKCTRL_GEN_GCLK4;
+
+
+void setup_rtc_time_counter(){
+  //configGCLK6(true);
+  // https://forum.arduino.cc/t/arduino-zero-sam-d21-hardware-counter-as-simple-input-counter-intialization/630306/2
+  // Generic Clock /////////////////////////////////////////////////////////////////////////
+ 
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |        // Enable the generic clock...
+                      GCLK_CLKCTRL_GEN_GCLK6 |    // On GCLK6 at 1024Hz
+                      GCLK_CLKCTRL_ID_TC4_TC5;    // Route GCLK6 to TC4 and TC5
+  while (GCLK->STATUS.bit.SYNCBUSY);              // Wait for synchronization
+                              
+  // Timer Counter TC4 /////////////////////////////////////////////////////////////////////
+
+  PM->APBCMASK.reg |= PM_APBCMASK_TC4; // PM enable TC4 & TC5
+  PM->APBCMASK.reg |= PM_APBCMASK_TC5;
+
+ 
+  //TC4->COUNT32.EVCTRL.reg |= TC_EVCTRL_TCEI |              // Enable asynchronous events on the TC timer
+  //                           TC_EVCTRL_EVACT_COUNT;        // Increment the TC timer each time an event is received
+
+  TC4->COUNT32.CTRLA.reg = TC_CTRLA_MODE_COUNT32 |         // Configure TC4 (if 32: together with TC5 to operate in 32-bit mode)
+                           TC_CTRLA_RUNSTDBY |             // Set timer to run in standby
+                           TC_CTRLA_PRESCALER_DIV1 |       // Prescaler: GCLK_TC/1
+                           TC_CTRLA_PRESCSYNC_GCLK;        // Reload or reset the counter on next generic clock 
+                      
+  TC4->COUNT32.CTRLA.bit.ENABLE = 1;                       // Enable TC4
+  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);                // Wait for synchronization
+
+  TC4->COUNT32.READREQ.reg = TC_READREQ_RCONT |            // Enable a continuous read request
+                             TC_READREQ_ADDR(0x10);        // Offset of the 32-bit COUNT register
+  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);                // Wait for synchronization
+
+}
+
+uint32_t read_time_counter(){
+  TC4->COUNT32.READREQ.reg = TC_READREQ_RREQ;         // Request a read synchronization
+  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);           // Wait for read synchronization
+  return TC4->COUNT32.COUNT.reg;
+}
+
+void reset_time_counter(){
+  TC4->COUNT32.COUNT.reg = 0x0000;                        // Output the result
+  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);               // Wait for read synchronization
+  TC4->COUNT32.CTRLBSET.reg = TC_CTRLBSET_CMD_RETRIGGER;  // Retrigger the TC4 timer
+  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);               // Wait for synchronization
+}
