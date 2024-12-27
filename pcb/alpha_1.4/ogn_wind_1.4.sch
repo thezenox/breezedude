@@ -117,6 +117,13 @@
 <layer number="134" name="BGA_GND" color="7" fill="1" visible="yes" active="yes"/>
 <layer number="135" name="BGA_NC" color="7" fill="1" visible="yes" active="yes"/>
 <layer number="136" name="BGA_DED" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="137" name="silkbottom" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="138" name="EEE" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="139" name="_tKeepout" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="140" name="mbKeepout" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="141" name="ASSEMBLY_TOP" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="142" name="mbRestrict" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="143" name="PLACE_BOUND_TOP" color="7" fill="1" visible="yes" active="yes"/>
 <layer number="144" name="Drill_legend" color="7" fill="1" visible="no" active="yes"/>
 <layer number="145" name="DrillLegend_01-02" color="7" fill="1" visible="yes" active="yes"/>
 <layer number="146" name="DrillLegend_01-15" color="7" fill="1" visible="yes" active="yes"/>
@@ -129,6 +136,14 @@
 <layer number="153" name="FabDoc1" color="6" fill="1" visible="no" active="no"/>
 <layer number="154" name="FabDoc2" color="2" fill="1" visible="no" active="no"/>
 <layer number="155" name="FabDoc3" color="7" fill="15" visible="no" active="no"/>
+<layer number="166" name="AntennaArea" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="168" name="4mmHeightArea" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="191" name="mNets" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="192" name="mBusses" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="193" name="mPins" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="194" name="mSymbols" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="195" name="mNames" color="7" fill="1" visible="yes" active="yes"/>
+<layer number="196" name="mValues" color="7" fill="1" visible="yes" active="yes"/>
 <layer number="199" name="Contour" color="7" fill="1" visible="no" active="yes"/>
 <layer number="200" name="200bmp" color="1" fill="10" visible="no" active="yes"/>
 <layer number="201" name="201bmp" color="2" fill="10" visible="no" active="yes"/>
@@ -7980,6 +7995,68 @@ Source: &lt;a href="http://www.ti.com/lit/gpn/TPS22975"&gt; Datasheet &lt;/a&gt;
 </deviceset>
 </devicesets>
 </library>
+<library name="ufl">
+<description>&lt;b&gt;Epson Crystal Units&lt;/b&gt;&lt;br&gt;
+Series MA-306, MA-406, MA-505, MA-506&lt;br&gt;
+&lt;br&gt;
+Created by Frank-Christian Krügel fchk@istda.com&lt;br&gt;</description>
+<packages>
+<package name="U.FL">
+<wire x1="1.3" y1="0.7" x2="1.3" y2="2" width="0.127" layer="21"/>
+<wire x1="1.3" y1="2" x2="-1.3" y2="2" width="0.127" layer="21"/>
+<wire x1="-1.3" y1="-2" x2="1.3" y2="-2" width="0.127" layer="21"/>
+<wire x1="1.3" y1="-2" x2="1.3" y2="-0.7" width="0.127" layer="21"/>
+<wire x1="-1.3" y1="0.7" x2="-1.3" y2="2" width="0.127" layer="21"/>
+<wire x1="-1.3" y1="-2" x2="-1.3" y2="-0.7" width="0.127" layer="21"/>
+<wire x1="1.4" y1="0.7" x2="1.4" y2="2" width="0.127" layer="21"/>
+<wire x1="1.4" y1="-2" x2="1.4" y2="-0.7" width="0.127" layer="21"/>
+<wire x1="1.5" y1="0.7" x2="1.5" y2="2" width="0.127" layer="21"/>
+<wire x1="1.5" y1="-2" x2="1.5" y2="-0.7" width="0.127" layer="21"/>
+<wire x1="1.5" y1="2" x2="1.3" y2="2" width="0.127" layer="21"/>
+<wire x1="1.5" y1="0.7" x2="1.3" y2="0.7" width="0.127" layer="21"/>
+<wire x1="1.5" y1="-0.7" x2="1.3" y2="-0.7" width="0.127" layer="21"/>
+<wire x1="1.5" y1="-2" x2="1.3" y2="-2" width="0.127" layer="21"/>
+<smd name="P$1" x="0" y="1.375" dx="2.2" dy="0.85" layer="1"/>
+<smd name="P$2" x="0" y="-1.375" dx="2.2" dy="0.85" layer="1"/>
+<smd name="P$3" x="1.525" y="0" dx="1.05" dy="1" layer="1"/>
+<smd name="P$4" x="-1.525" y="0" dx="1.05" dy="1" layer="1"/>
+</package>
+</packages>
+<symbols>
+<symbol name="U.FL">
+<wire x1="0" y1="-2.54" x2="0" y2="-5.08" width="0.254" layer="94"/>
+<circle x="0" y="0" radius="1.1359" width="0.254" layer="94"/>
+<circle x="0" y="0" radius="2.54" width="0.254" layer="94"/>
+<text x="0" y="5.08" size="1.778" layer="95">&gt;NAME</text>
+<pin name="GND@0" x="-2.54" y="-5.08" visible="off" length="short"/>
+<pin name="SIGNAL" x="5.08" y="0" visible="off" length="middle" rot="R180"/>
+<pin name="GND@1" x="-2.54" y="-7.62" visible="off" length="short"/>
+<wire x1="0" y1="-5.08" x2="0" y2="-7.62" width="0.254" layer="94"/>
+<wire x1="0" y1="-5.08" x2="0" y2="-10.16" width="0.254" layer="94"/>
+<pin name="GND@2" x="-2.54" y="-10.16" visible="off" length="short"/>
+</symbol>
+</symbols>
+<devicesets>
+<deviceset name="U.FL" prefix="X" uservalue="yes">
+<gates>
+<gate name="G$1" symbol="U.FL" x="0" y="0"/>
+</gates>
+<devices>
+<device name="" package="U.FL">
+<connects>
+<connect gate="G$1" pin="GND@0" pad="P$1"/>
+<connect gate="G$1" pin="GND@1" pad="P$2"/>
+<connect gate="G$1" pin="GND@2" pad="P$4"/>
+<connect gate="G$1" pin="SIGNAL" pad="P$3"/>
+</connects>
+<technologies>
+<technology name=""/>
+</technologies>
+</device>
+</devices>
+</deviceset>
+</devicesets>
+</library>
 </libraries>
 <attributes>
 </attributes>
@@ -8091,6 +8168,7 @@ Source: &lt;a href="http://www.ti.com/lit/gpn/TPS22975"&gt; Datasheet &lt;/a&gt;
 <attribute name="SPICEPREFIX" value="C"/>
 </part>
 <part name="U$22" library="000_eigene_Bauteile" deviceset="SJ" device=""/>
+<part name="ANT_UFL" library="ufl" deviceset="U.FL" device=""/>
 </parts>
 <sheets>
 <sheet>
@@ -8394,6 +8472,7 @@ Source: &lt;a href="http://www.ti.com/lit/gpn/TPS22975"&gt; Datasheet &lt;/a&gt;
 <attribute name="VALUE" x="120.67" y="58.18" size="1.27" layer="96" font="vector" rot="R180" align="center"/>
 </instance>
 <instance part="U$22" gate="G$1" x="137.16" y="-55.88" smashed="yes"/>
+<instance part="ANT_UFL" gate="G$1" x="160.02" y="-63.5" smashed="yes"/>
 </instances>
 <busses>
 </busses>
@@ -8635,6 +8714,16 @@ Source: &lt;a href="http://www.ti.com/lit/gpn/TPS22975"&gt; Datasheet &lt;/a&gt;
 <pinref part="C15" gate="G$1" pin="1"/>
 <wire x1="116.84" y1="55.88" x2="114.3" y2="55.88" width="0.1524" layer="91"/>
 <label x="114.3" y="55.88" size="1.27" layer="95" rot="R180" xref="yes"/>
+</segment>
+<segment>
+<pinref part="ANT_UFL" gate="G$1" pin="GND@0"/>
+<pinref part="ANT_UFL" gate="G$1" pin="GND@1"/>
+<wire x1="154.94" y1="-71.12" x2="157.48" y2="-71.12" width="0.1524" layer="91"/>
+<wire x1="157.48" y1="-71.12" x2="157.48" y2="-68.58" width="0.1524" layer="91"/>
+<junction x="157.48" y="-71.12"/>
+<pinref part="ANT_UFL" gate="G$1" pin="GND@2"/>
+<wire x1="157.48" y1="-73.66" x2="157.48" y2="-71.12" width="0.1524" layer="91"/>
+<label x="154.94" y="-71.12" size="1.27" layer="95" rot="R180" xref="yes"/>
 </segment>
 </net>
 <net name="3V3" class="0">
@@ -8979,6 +9068,11 @@ Source: &lt;a href="http://www.ti.com/lit/gpn/TPS22975"&gt; Datasheet &lt;/a&gt;
 <label x="144.78" y="-55.88" size="1.27" layer="95" xref="yes"/>
 <wire x1="140.97" y1="-55.88" x2="144.78" y2="-55.88" width="0.1524" layer="91"/>
 <pinref part="U$22" gate="G$1" pin="P$2"/>
+</segment>
+<segment>
+<pinref part="ANT_UFL" gate="G$1" pin="SIGNAL"/>
+<wire x1="165.1" y1="-63.5" x2="167.64" y2="-63.5" width="0.1524" layer="91"/>
+<label x="167.64" y="-63.5" size="1.27" layer="95" xref="yes"/>
 </segment>
 </net>
 <net name="RFM_RESET" class="0">

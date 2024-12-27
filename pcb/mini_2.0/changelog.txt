@@ -1,0 +1,10 @@
+2024-12-18: 
+Mini V2.0
+* Based on alpha 1.4, remade in KiCAD
+* Removed heater support (DCDC)
+* Changed to linear PV charger (CN 3063)
+* TQPF48 package for SAMD21 (cheaper on JLCPCB, better thermal stress durability)
+* TVS diodes for all external wiring
+* BMP388 baro option
+* Second (red) LED for error display
+* Onboard battery holder for 16340 (CR123A size)
