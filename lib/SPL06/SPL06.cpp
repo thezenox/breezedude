@@ -13,12 +13,14 @@ bool SPL06::begin(uint8_t spl_address){
 		
 	// ---- Oversampling of >8x for temperature or pressuse requires FIFO operational mode which is not implemented ---
 	// ---- Use rates of 8x or less until feature is implemented ---
-	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x06, 0x03);	// Pressure 8x oversampling
+	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x06, 0x73);	// Pressure 8x oversampling 14ms, 128 samples/s
+	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x07, 0xF3);	// Temperature 8x oversampling, 128 samples/s
 
-	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x07, 0x83);	// Temperature 8x oversampling
+  	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x06, 0x13);	// Pressure 8x oversampling 14ms, 2 samples/s
+	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x07, 0x93);	// Temperature 8x oversampling, 2 samples/s
 
-  // i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x08, 0B0111);	// continuous temp and pressure measurement (6µA)
-  i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x08, 0B0000);	// set to idle mode (1µA)
+  i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x08, 0B0111);	// continuous temp and pressure measurement (6µA)
+  //i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x08, 0B0000);	// set to idle mode (1µA)
 
 	i2c_eeprom_write_uint8_t(SPL_CHIP_ADDRESS, 0x09, 0x00);	// FIFO Pressure measurement  
   uint8_t prod_id = i2c_eeprom_read_uint8_t(SPL_CHIP_ADDRESS, 0x0D);

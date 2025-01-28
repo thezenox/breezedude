@@ -272,7 +272,19 @@ typedef enum {
 	FR_LOCKED,				/* (16) The operation is rejected according to the file sharing policy */
 	FR_NOT_ENOUGH_CORE,		/* (17) LFN working buffer could not be allocated */
 	FR_TOO_MANY_OPEN_FILES,	/* (18) Number of open files > FF_FS_LOCK */
-	FR_INVALID_PARAMETER	/* (19) Given parameter is invalid */
+	FR_INVALID_PARAMETER,	/* (19) Given parameter is invalid */
+	FR_MKFS_ABORTED_NO_PARTITION, /* (20)  */
+	FR_MKFS_ABORTED_SIZE_START, /* (21)  */
+	FR_MKFS_ABORTED_VOL_128,  /* (22)  */
+	FR_MKFS_ABORTED_NOTFAT16,  /* (23)  */
+	FR_MKFS_ABORTED_VOL_TO_SMALL, /* (24)  */
+	FR_MKFS_ABORTED_TO_FEW_CLUSTERS_FAT12, /* (25)  */
+	FR_MKFS_ABORTED_TO_MANY_CLUSTERS_FAT12,  /* (26)  */
+	FR_MKFS_ABORTED_TO_FEW_CLUSTERS_FAT16,
+	FR_MKFS_ABORTED_TO_MANY_CLUSTERS_FAT16,
+	FR_MKFS_ABORTED_TO_FEW_CLUSTERS_FAT32,
+	FR_MKFS_ABORTED_TO_MANY_CLUSTERS_FAT32,
+
 } FRESULT;
 
 
@@ -308,6 +320,7 @@ FRESULT f_forward (FIL* fp, UINT(*func)(const BYTE*,UINT), UINT btf, UINT* bf);	
 FRESULT f_expand (FIL* fp, FSIZE_t szf, BYTE opt);					/* Allocate a contiguous block to the file */
 FRESULT f_mount (FATFS* fs, const TCHAR* path, BYTE opt);			/* Mount/Unmount a logical drive */
 FRESULT f_mkfs (const TCHAR* path, BYTE opt, DWORD au, void* work, UINT len);	/* Create a FAT volume */
+FRESULT f_mkfs12 (const TCHAR* path, BYTE opt, DWORD au, void* work, UINT len);	/* Create a FAT12 volume */
 FRESULT f_fdisk (BYTE pdrv, const DWORD* szt, void* work);			/* Divide a physical drive into some partitions */
 FRESULT f_setcp (WORD cp);											/* Set current code page */
 int f_putc (TCHAR c, FIL* fp);										/* Put a character to the file */

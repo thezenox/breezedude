@@ -113,6 +113,19 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
     SCB->SCR |= SCB_SCR_SLEEPDEEP_Msk;// | SCB_SCR_SLEEPONEXIT_Msk;  // Put the SAMD21 in deep sleep upon executing the __WFI() function
     NVMCTRL->CTRLB.reg |= NVMCTRL_CTRLB_SLEEPPRM_DISABLED;        // Disable auto power reduction during sleep - SAMD21 Errata 1.14.2
 
+
+  // get silicon revision
+  uint32_t rev = DSU->DID.reg;
+  rev &= DSU_DID_REVISION_Msk;
+  rev = rev >> DSU_DID_REVISION_Pos;
+  #define _SYSTEM_MCU_REVISION_D 3
+
+  if (rev < _SYSTEM_MCU_REVISION_D) {
+      /* Errata 13140: Make sure that the Flash does not power all the way down
+        * when in sleep mode. https://forum.microchip.com/s/topic/a5C3l000000UfKhEAK/t171994*/
+      NVMCTRL->CTRLB.bit.SLEEPPRM = NVMCTRL_CTRLB_SLEEPPRM_DISABLED_Val;
+  }
+
   // Enable RTC--------------------------------------------------------------
     RTC->MODE1.CTRL.bit.ENABLE = 1;                       // Enable the RTC
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);               // Wait for synchronization
@@ -241,7 +254,7 @@ void sleep(bool light) {
   if(light){
   // Idele Modes. see P.138 of https://ww1.microchip.com/downloads/en/DeviceDoc/SAM_D21_DA1_Family_DataSheet_DS40001882F.pdf
    PM->SLEEP.reg |= PM_SLEEP_IDLE_CPU;  // Enable Idle0 mode - sleep CPU clock only
-  // PM->SLEEP.reg |= PM_SLEEP_IDLE_AHB; // Idle1 - sleep CPU and AHB clocks
+   // PM->SLEEP.reg |= PM_SLEEP_IDLE_AHB; // Idle1 - sleep CPU and AHB clocks
    // PM->SLEEP.reg |= PM_SLEEP_IDLE_APB; // Idle2 - sleep CPU, AHB, and APB clocks
    SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
   } else {
@@ -257,6 +270,7 @@ void sleep(bool light) {
   __WFI(); // Wait for interrupt (places device in sleep mode)
   // Wakeup from timer or pinInterrupt
   SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk; // Enable SysTick interrupts
+  
 
   // Code resumes here on wake (WDT early warning interrupt).
   // Bug: the return value assumes the WDT has run its course;

@@ -25,22 +25,26 @@ extern "C" {
 extern uint32_t __etext; // CODE END. Symbol exported from linker script
 }
 
-#define SAMD_FLASH_PAGE_SIZE (8 << NVMCTRL->PARAM.bit.PSZ)
-#define FLASH_NUM_PAGES NVMCTRL->PARAM.bit.NVMP
-#define SAMD_FLASH_SIZE (SAMD_FLASH_PAGE_SIZE * FLASH_NUM_PAGES)
-#define FLASH_BLOCK_SIZE (SAMD_FLASH_PAGE_SIZE * 16)
+#define SAMD_FLASH_PAGE_SIZE (8 << NVMCTRL->PARAM.bit.PSZ) // 4096
+#define FLASH_NUM_PAGES NVMCTRL->PARAM.bit.NVMP // 64
+#define SAMD_FLASH_SIZE (SAMD_FLASH_PAGE_SIZE * FLASH_NUM_PAGES) // 262144
+#define FLASH_BLOCK_SIZE (SAMD_FLASH_PAGE_SIZE * 16) //65536 0x10000
 
-InternalFlash::InternalFlash()
-{
-  _flash_address = (uint8_t *) 0x00021800; // (uint8_t *)&__etext; // OK to overwrite the '0' there // 0x0002f800 = 0x00021800 + E0000, size 67584 = 0x10800
-  uint16_t partialBlock = (uint32_t)_flash_address % FLASH_BLOCK_SIZE;
-  if (partialBlock) {
-    _flash_address += FLASH_BLOCK_SIZE - partialBlock;
-  }
+
+InternalFlash::InternalFlash(){
+#define INTERNAL_FLASH_FILESYSTEM_SIZE        (40*1024)
+#define INTERNAL_FLASH_FILESYSTEM_START_ADDR  (0x00040000 - 256 - 0 - INTERNAL_FLASH_FILESYSTEM_SIZE)
+
+  _flash_address = (uint8_t *) INTERNAL_FLASH_FILESYSTEM_START_ADDR ; // (uint8_t *)&__etext; // OK to overwrite the '0' there // 0x0002f800 = 0x00021800 + E0000, size 67584 = 0x10800
+ // Use fixed address and size
+ // uint16_t partialBlock = (uint32_t)_flash_address % FLASH_BLOCK_SIZE;
+ // if (partialBlock) {
+ //   _flash_address += FLASH_BLOCK_SIZE - partialBlock;
+ // }
   // Move ahead one block. This shouldn't be necessary, but for
   // some reason certain programs are clobbering themselves.
-  _flash_address += FLASH_BLOCK_SIZE*8;
-  _flash_size=SAMD_FLASH_SIZE-(int)_flash_address;
+  //_flash_address += FLASH_BLOCK_SIZE;
+  _flash_size = INTERNAL_FLASH_FILESYSTEM_SIZE; //SAMD_FLASH_SIZE-(int)_flash_address;
 }
 
 void InternalFlash::write(uint32_t offset, const void *data, uint32_t size)
