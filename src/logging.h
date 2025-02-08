@@ -12,7 +12,7 @@ void log_i(const char * msg){
   if(debug_enabled){
     DEBUGSER.print(msg);
     DEBUGSER.flush();
-    if(display_present) {display_add_line(String(msg));}
+    if(display_present()) {display_add_line(String(msg));}
   }
   if(usb_connected){
     Serial.print(msg);
@@ -23,7 +23,7 @@ void log_i(const char * msg, uint32_t num){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
     DEBUGSER.flush();
-    if(display_present) {display_add_line(String(msg) + String(num));}
+    if(display_present()) {display_add_line(String(msg) + String(num));}
   }
   if(usb_connected){
     Serial.print(msg);
@@ -35,7 +35,7 @@ void log_i(const char * msg, int32_t num){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
     DEBUGSER.flush();
-    if(display_present) {display_add_line(String(msg) + String(num));}
+    if(display_present()) {display_add_line(String(msg) + String(num));}
   }
   if(usb_connected){
     Serial.print(msg);
@@ -46,7 +46,7 @@ void log_i(const char * msg, int num){
   if(debug_enabled){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
-    if(display_present) {display_add_line(String(msg) + String(num));}
+    if(display_present()) {display_add_line(String(msg) + String(num));}
   }
   if(usb_connected){
     Serial.print(msg);
@@ -57,7 +57,7 @@ void log_i(const char * msg, float num){
   if(debug_enabled){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
-    if(display_present) {display_add_line(String(msg) + String(num));}
+    if(display_present()) {display_add_line(String(msg) + String(num));}
   }
   if(usb_connected){
     Serial.print(msg);
@@ -68,7 +68,7 @@ void log_i(const char * msg, float num){
 void log_e(const char * msg){
   if(errors_enabled){
     DEBUGSER.print(msg);
-    if(display_present) {display_add_line(String(msg));}
+    if(display_present()) {display_add_line(String(msg));}
   }
   if(usb_connected){
     Serial.print(msg);

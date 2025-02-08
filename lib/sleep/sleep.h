@@ -15,6 +15,8 @@ bool set_cpu_div(int divisor);
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 void setup_PM(bool en_counter);
+void PM_sleep();
+void PM_wakeup();
 
 void setup_pulse_counter();
 uint32_t read_pulse_counter();

@@ -283,6 +283,55 @@ void sleep(bool light) {
 // https://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-42248-SAM-D20-Power-Measurements_ApplicationNote_AT04188.pdf
 }
 
+void PM_sleep(){
+  PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_DSU;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_USB; // this kills I2C. No
+
+  PM->APBCMASK.reg &= ~PM_APBBMASK_PAC1;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_HMATRIX;
+
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_DMAC;
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_DSU;
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_USB; // this kills I2C after sleep
+
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_I2S;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_PTC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_DAC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_AC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_ADC;
+
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM0;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM2;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM3;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM4;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM5;
+
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC0;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC1;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
+  
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC5;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
+
+
+  USB->DEVICE.CTRLA.bit.ENABLE = 0;
+  USB->DEVICE.CTRLA.bit.RUNSTDBY = 0;
+  while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
+}
+
+void PM_wakeup(){
+  PM->APBCMASK.reg |= PM_APBCMASK_ADC;
+
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0;
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM3;
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
+}
+
 void setup_PM(bool en_counter){
 // We use this one { PORTB,  8, PIO_ANALOG, (PIN_ATTR_PWM|PIN_ATTR_TIMER), ADC_Channel2, PWM4_CH0, TC4_CH0, EXTERNAL_INT_8 }, // ADC/AIN[2]
 // disable Clock ADC/DAC for Analog
@@ -302,9 +351,9 @@ void setup_PM(bool en_counter){
   PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
   PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
 
+  //PM->APBCMASK.reg &= ~PM_APBCMASK_TC4; // used for rtc & pulsecounter, keep it running
   if(!en_counter){
-    PM->APBCMASK.reg &= ~PM_APBCMASK_TC4; // used for pulsecounter
-    PM->APBCMASK.reg &= ~PM_APBCMASK_TC5; //my be turned off?
+    PM->APBCMASK.reg &= ~PM_APBCMASK_TC5; //only used if 32bit rtc counter is used (ws80), not for 16bit davis6410 pulse counter
   }
   PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
   PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
@@ -385,7 +434,7 @@ if (in > EXTERNAL_INT_7) {
   // Timer Counter TC4 /////////////////////////////////////////////////////////////////////
 
   PM->APBCMASK.reg |= PM_APBCMASK_TC4; // PM enable TC4 & TC5
-  PM->APBCMASK.reg |= PM_APBCMASK_TC5;
+  //PM->APBCMASK.reg |= PM_APBCMASK_TC5; // saves 10uA
 
  
   TC4->COUNT16.EVCTRL.reg |= TC_EVCTRL_TCEI |              // Enable asynchronous events on the TC timer
@@ -428,8 +477,6 @@ void stop_pulse_counter(){
  // https://forum.arduino.cc/t/samd21-not-waking-up-using-timer-interrupt-from-deep-sleep/662100/2
 
 // https://github.com/adafruit/ArduinoCore-samd/blob/21ac7624c9d7374878d2c2029caad203ed34326d/cores/arduino/USB/SAMR21_USBDevice.h#L50
-//  USB->DEVICE.CTRLA.bit.ENABLE = 0;
-//  USB->DEVICE.CTRLA.bit.RUNSTDBY = 0;
 //
 //  USB->DEVICE.CTRLA.reg &= ~USB_CTRLA_ENABLE; //Disable USB port (to disconnect correctly from host
 //  USB->DEVICE.CTRLA.bit.ENABLE = 0; // Disable the USB peripheral
@@ -470,7 +517,7 @@ void setup_rtc_time_counter(){
                               
   // Timer Counter TC4 /////////////////////////////////////////////////////////////////////
 
-  PM->APBCMASK.reg |= PM_APBCMASK_TC4; // PM enable TC4 & TC5
+  PM->APBCMASK.reg |= PM_APBCMASK_TC4; // PM enable TC4 & TC5 for 32 bit counter
   PM->APBCMASK.reg |= PM_APBCMASK_TC5;
 
  

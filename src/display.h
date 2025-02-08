@@ -42,6 +42,20 @@ int line_pos = NUM_LINES-1;
 int linecount =0;
 bool display_init_ok = false;
 
+void display_delay(uint32_t t){
+    if(display_init_ok){
+        delay(t);  // wait some time to keep the message on the screen
+    }
+}
+
+bool display_check_present(uint8_t address){
+    Wire.beginTransmission(address);
+    if(Wire.endTransmission() == 0){
+        return true;
+    }
+    return false;
+}
+
 bool display_present(){
     return display_init_ok;
 }
@@ -95,7 +109,7 @@ void setup_display(){
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     //DEBUGSER.println(F("SSD1306 allocation failed"));
   } else{
-    display_init_ok = true;
+    display_init_ok = display_check_present(SCREEN_ADDRESS);
     //log_i("Display setup ok\n");
     display.display();
     display.clearDisplay();

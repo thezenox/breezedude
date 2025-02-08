@@ -5558,6 +5558,7 @@ FRESULT f_mkfs12 (
 	stat = disk_initialize(pdrv);
 	if (stat & STA_NOINIT) return FR_NOT_READY;
 	if (stat & STA_PROTECT) return FR_WRITE_PROTECTED;
+	// 0,3,20006f7c, 124899, 
 	if (disk_ioctl(pdrv, GET_BLOCK_SIZE, &sz_blk) != RES_OK || !sz_blk || sz_blk > 32768 || (sz_blk & (sz_blk - 1))) sz_blk = 1;	/* Erase block to align data area */
 
 	ss = FF_MAX_SS;
@@ -5584,6 +5585,7 @@ FRESULT f_mkfs12 (
 		sz_vol = ld_dword(pte + PTE_SizLba);	/* Get volume size */
 	} else {
 		/* Create a single-partition in this function */
+		// 0,1,20006F7c
 		if (disk_ioctl(pdrv, GET_SECTOR_COUNT, &sz_vol) != RES_OK) LEAVE_MKFS(FR_DISK_ERR);
 		b_vol = (opt & FM_SFD) ? 0 : 33;		/* Volume start sector, was 63 */
 		if (sz_vol < b_vol) LEAVE_MKFS(FR_MKFS_ABORTED_SIZE_START);

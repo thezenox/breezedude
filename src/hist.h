@@ -137,8 +137,8 @@ void insert_sorted(uint32_t* arr, int arrlen, uint32_t value){
 }
 
 float get_gust_from_hist(uint32_t age){
-  #define GUSTBUFFERLEN 5
-  uint32_t ret[GUSTBUFFERLEN] = {0,0,0,0,0};
+  #define GUSTBUFFERLEN 7
+  uint32_t ret[GUSTBUFFERLEN] = {0,0,0,0,0,0,0};
   uint8_t p = wind_hist_pos;
   for( int i = 0; i < WIND_HIST_LEN; i++){
     if(p == WIND_HIST_LEN){
@@ -152,7 +152,7 @@ float get_gust_from_hist(uint32_t age){
     p++;
   }
   //printf("0: %lu 1: %lu 2: %lu 3: %lu 4: %lu \n", ret[0], ret[1], ret[2], ret[3], ret[4] );
-  return ret[3]/10.0; // return 4th highest value to avoid sending a reading error or one time high value
+  return ret[4]/10.0; // return 5th highest value to avoid sending a reading error or one time high value
 }
 
 

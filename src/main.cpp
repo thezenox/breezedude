@@ -19,27 +19,17 @@
 #include "display.h"
 #include "hist.h"
 
- #define HAS_HEATER // support for Heater (V1.x)
+ #define HAS_HEATER // support for Heater (HW V1.x)
 
 // Todo list:
 // * Read bootloader version
-// * detect bad readings
-//  * wind > gust --> ignore
-//  * gust too high (water in sensor) --> ignore
-//  * Sensor frozen?
-// * extend send interval on low battery
+// * detect sensor frozen?
 
-// Hardware:
-// move I2C conntor (colission with antenna)
-// add p-fet to power off WS80 (if battery is empty?)
-// Simple UVP for battery?
-// OUTPUT in deepsleep prüfen (Pfet ws80)
-
-// https://github.com/adafruit/Adafruit_TinyUSB_Arduino
-// https://github.com/gereic/GXAirCom
+// https://github.com/adafruit/Adafruit_TinyUSB_Arduin
 // https://github.com/adafruit/ArduinoCore-samd
 // https://github.com/Mollayo/SAMD_InternalFlash
 // https://github.com/Microsoft/uf2
+// https://github.com/adafruit/uf2-samdx1
 
 //Modifications:
 // SAMD_InternalFlash.cpp:  
@@ -52,16 +42,15 @@
 // HT7533-1 2.5µA (100mA max)?
 
 //Power consumption:
-// Deepsleep 120µA (without WS80 sensor, davis speed and dir open)
+// Deepsleep 180µA (without WS80 sensor, davis speed and dir open)
 // avg @40s send interval: 650µA (with davis 6410)
-// avg @40s send interval: 1.65mA (with WS80)
+// avg @40s send interval: 2.25mA (with WS80 1.2.8)
 
 #define FANET_VENDOR_ID 0xBD
 #define VBATT_LOW 3.35 // Volt
 
 Adafruit_USBD_MSC usb_msc;
 #define DISK_BLOCK_SIZE 512 // Block size in bytes for tinyUSB flash drive. Should be always 512
-#define BUFFERSIZE 1024 // size of linebuffer
 
 InternalFlash my_internal_storage;
 Adafruit_FlashTransport_InternalFlash flashTransport(&my_internal_storage);
@@ -69,10 +58,10 @@ Adafruit_InternalFlash_Wrapper flash(&flashTransport);
 FatFileSystem fatfs;
 TinyGPSPlus tinyGps;
 
-#define BROADCAST_INTERVAL 40*1000 // dafault value,  overwritten by settingfile
+#define BROADCAST_INTERVAL 40*1000UL // dafault value,  overwritten by settingfile
 
 #define DEBUGSER Serial1
-#define WS80_UART Serial1
+#define WSXX_UART Serial1
 #define GPS_SERIAL Serial1 // if no WS80 is connected a GPS receiver can be used. Mainly for OGN range/coverage check
 
 // https://github.com/adafruit/ArduinoCore-samd/blob/master/variants/itsybitsy_m0/variant.cpp
@@ -92,7 +81,7 @@ TinyGPSPlus tinyGps;
 #define PIN_LORA_DIO3 3  // PA09 - SERCOM0/PAD[1], ADC
 #define PIN_PV_CHARGE 38// PB23
 #define PIN_PV_DONE 37 // PB22
-#define PIN_PS_WS 36 // PB03 PIO_SERCOM_ALT, PIN_ATTR_NONE, No_ADC_Channel, NOT_ON_PWM, NOT_ON_TIMER, EXTERNAL_INT_NONE },  // SPI Flash MISO on ItsyBitsy M0
+#define PIN_PS_WS 36 // PB03 PIO_SERCOM_ALT, PIN_ATTR_NONE, No_ADC_Channel, NOT_ON_PWM, NOT_ON_TIMER, EXTERNAL_INT_NONE },  // SPI Flash MISO on ItsyBitsy M0, Power switch control for WSXX Sensor. HW >= 2.2
 
 #define PIN_SERCOM1_TX 40 // PA00 SERCOM1 PAD0
 #define PIN_SERCOM1_RX 10 // PA01 SERCOM1 PAD1
@@ -136,7 +125,7 @@ Adafruit_BMP3XX bmp3xx;
 #define PIN_RX 0 // A6 PA11
 #define PIN_TX 1 // A7 PA10
 
-#define PIN_STATUSLED 13 // PA17 // blue, 1.2mA @ 2.77V = 440Ohm
+#define PIN_STATUSLED 13 // PA17 // blue, 1.2mA @ 2.77V = 470Ohm
 #define PIN_ERRORLED 4 //D4/A8 PA08 // red 2.9mA @ 2.16V = 390Ohm
 #define PIN_V_READ_TRIGGER A2 // D16 PB09
 #define PIN_V_READ A1 // D15 PB08 - { PORTB,  8, PIO_ANALOG, (PIN_ATTR_PWM|PIN_ATTR_TIMER), ADC_Channel2, PWM4_CH0, TC4_CH0, EXTERNAL_INT_8 }, // ADC/AIN[2]
@@ -188,9 +177,15 @@ float altitude = -1;
   float mppt_voltage = 5.5;
   float heater_voltage = 4.5;
   uint32_t heater_on_time_cum = 0;
-  #define MAX_HEAT_TIME 30*60*1000 //30 minv
+  #define MAX_HEAT_TIME 30*60*1000UL //30 minv
 #endif
 bool use_mcp4652 = true; // used on first version of PCB (<=1.3) to set MPPT and DCDC voltage
+
+enum ResParseChar {
+  RESP_OK,
+  RESP_ERROR,
+  RESP_COMPLETE
+};
 
 enum HW_Version{
   HW_unknown,
@@ -218,12 +213,17 @@ enum BARO_CHIP{
 
 // Sensor selction
 bool undervoltage = false;
+float reduce_interval_voltage = 3.5; // below this voltage the send inverval will be reduced to save energy
+bool reduced_interval = false; // reduced interval active
+bool is_wsxx = false; // generic for both
 bool is_ws80 = false;
+bool is_ws85 = false;
 bool is_davis6410 = false;
+uint32_t sensor_integration_time = 12000; // ms to sleep while counting pulses. Resolution of gust detection
 bool is_baro = false;
 bool is_gps = false;
+uint32_t last_gps_valid = 0;
 bool testmode = false; // send without weather station to check lora coverage
-bool is_beacon = false; // use as FANET/FLARM Beacon. requires GPS
 uint32_t gps_baud = 9600;
 BARO_CHIP baro_chip = BARO_NONE;
 uint32_t wind_age = WIND_AGE; 
@@ -239,8 +239,9 @@ uint32_t broadcast_interval_name = 1000*60*5; // 5 min
 uint32_t last_msg_name = 0;
 uint32_t broadcast_interval_info = 0;
 uint32_t last_msg_info = 0;
+uint32_t broadcast_scale_factor = 1; // multiplier for broadcast values. is set to 2..5 if battery is low
 
-uint32_t last_ws80_data = 0;
+uint32_t last_wsxx_data = 0;
 uint32_t last_fnet_send = 0; // last package send
 uint32_t fanet_cooldown = 4000;
 
@@ -263,7 +264,7 @@ float temperature = 0;
 int humidity = 0;
 int light_lux = 0;
 float uv_level = 0;
-float ws80_vcc = 0;
+float wsxx_vcc = 0;
 float cap_voltage = 0; // WS85 supercap voltage
 float batt_volt = 0;
 int batt_perc = 0;
@@ -304,6 +305,9 @@ uint32_t time(){
   return millis() + sleeptime_cum + sleep_offset;
 }
 
+uint16_t get_fanet_id(){
+  return UniqueID[0] + ((UniqueID[1])<<8);
+}
 
 
 bool led_status(bool s){
@@ -389,7 +393,7 @@ uint8_t read_id(){
 
 // process line in 'key=value' format and hand to callback function
 bool process_line(char * in, int len, bool (*cb)(char*, char*)){
-  #define BUFFLEN 35
+  #define BUFFLEN 127
   char name [BUFFLEN];
   char value [BUFFLEN];
   memset(name,'\0',BUFFLEN);
@@ -400,76 +404,53 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
   int oc= 0; // output counter
   bool cont = true; //continue flag
 
-  while (cont && (c < max(len,255)) && (oc < (BUFFLEN-1)) ){ // limit to 255 chars per line
-    switch (in[c]) {
-      case '\r': cont = false; break;
-      case '\n': cont = false; break;
-      //case '-': cont = false; break; // catches negative temps
-      case '>': cont = false; break;
-      case '!':  cont = false; break;
-      case '#':  cont = false; break;
-      case '?':  literal = true; break; // enable literal mode
-      case '=':  if(oc && (ptr == name) ){ *(ptr+oc) = '\0'; ptr = value; oc = 0;} break; // switch to value
-      case ' ':  if(!literal) {break;} // avoid removing whitespaces from name
-      default:   *(ptr+oc) = in[c]; oc++; break; // copy char
+  while (cont && (c < max(len,BUFFLEN)) && (oc < (BUFFLEN-1))){ // limit to 255 chars per line
+    if(in[c] < 127){
+      switch (in[c]) {
+        case '\r': if(c != 0) {cont = false;} break;
+        case '\n': cont = false; break;
+        //case '-': cont = false; break; // catches negative temps
+        case '>': cont = false; break;
+        case '!':  cont = false; break;
+        case '#':  cont = false; break;
+        case '?':  literal = true; break; // enable literal mode
+        case '=':  if(oc && (ptr == name) ){ *(ptr+oc) = '\0'; ptr = value; oc = 0;} break; // switch to value
+        case ' ':  if(!literal) {break;} // avoid removing whitespaces from name
+        default:   *(ptr+oc) = in[c]; oc++; break; // copy char
+      }
     }
     c++;
   }
   if(oc && (ptr == value)){ // value is set
     return cb(name, value);
   }
+  
   return false;
 }
 
 
-/*
-========== WS85 Ver:1.0.7 ===========
->> g_RrFreqSel = 868M
->> Device_ID  = 0x002794
--------------------------------------
-WindDir      = 76
-WindSpeed    = 0.5
-WindGust     = 0.6
-GXTS04Temp   = 24.4
-
-UltSignalRssi  = 2
-UltStatus      = 0
-SwitchCnt      = 0
-RainIntSum     = 0
-Rain           = 0.0
-WaveCnt[CH1]   = 0
-WaveCnt[CH2]   = 0
-WaveRain       = 0
-ToaltWave[CH1] = 0
-ToaltWave[CH2] = 0
-ResAdcCH1      = 4095
-ResAdcSloCH1   = 0.0
-ResAdcCH2      = 4095
-ResAdcSloCH2   = 0.0
-CapVoltage     = 0.80V
-BatVoltage     = 3.26V
-=====================================
-*/
-
 // Set measurement value read from WS80 UART
 bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
+
   if(strcmp(key,"WindDir")==0) {wind_dir_raw = atoi(value); add_wind_history_dir(wind_dir_raw); return false;}
   if(strcmp(key,"WindSpeed")==0) {wind_speed = atof(value)*3.6; add_wind_history_wind(wind_speed); printf("%s = %0.2f\n",key, wind_speed); return false;}
   if(strcmp(key,"WindGust")==0) {wind_gust = atof(value)*3.6; add_wind_history_gust(wind_gust); printf("%s = %0.2f\n",key, wind_gust); return false;}
-  if(strcmp(key,"Temperature")==0) {temperature = atof(value); return false;}
-  if(strcmp(key,"GXTS04Temp")==0) {temperature = atof(value); return false;} // WS85
+  if(strcmp(key,"Temperature")==0) {temperature = atof(value); if(!is_ws80){is_ws80=true; is_ws85=false; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
+  if(strcmp(key,"GXTS04Temp")==0) {temperature = atof(value);  if(!is_ws85){is_ws85=true; is_ws80=false; log_i("Detected WS85\n");} return false;} // WS85 only
   if(strcmp(key,"Humi")==0) {humidity = atoi(value); return false;}
   if(strcmp(key,"Light")==0) {light_lux = atoi(value); return false;}
   if(strcmp(key,"UV_Value")==0) {uv_level = atof(value); return false;}
   if(strcmp(key,"CapVoltage")==0) {cap_voltage = atof(value); return false;} // WS85
   if(strcmp(key,"BatVoltage")==0) {
-    ws80_vcc = atof(value); 
-    last_ws80_data =time();
-    log_flush();
-    //log_i("WS80 data complete\r\n");
+    wsxx_vcc = atof(value); 
+    last_wsxx_data =time();
+    
+    log_i("WSXX data complete\r\n");
     return true;
   }
+
+  //log_i(" ->not_found\n");
   return false;
 }
 
@@ -515,12 +496,13 @@ void mcp4652_write(unsigned char addr, unsigned char value){
     Wire.write(cmd_byte);
     Wire.write(value);
     if(Wire.endTransmission() != 0){
-      log_e("Faild to set MCP4652. Disabling\r\n");
+      //log_e("Faild to set MCP4652. Disabling\r\n");
       use_mcp4652 = false;
       hw_version = HW_2_0;
       return;
+    } else {
+      hw_version = HW_1_3;
     }
-    hw_version = HW_1_3;
   }
 }
 
@@ -572,7 +554,7 @@ void read_batt_perc(){
     analogReference(AR_INTERNAL1V0);
     analogReadResolution(10);
     pinMode(PIN_V_READ, INPUT);
-    delay(1);
+    //delayMicroseconds(10);
     float val=0;
     digitalWrite(PIN_V_READ_TRIGGER,0);
     delayMicroseconds(10);
@@ -596,7 +578,9 @@ void read_batt_perc(){
     float v = val;
 
   // gets remapped by fanet (State of Charge  (+1byte lower 4 bits: 0x00 = 0%, 0x01 = 6.666%, .. 0x0F = 100%))
-    if( v < 3.4)  {batt_p = 0; switch_WS_power(0);} // Turn off power for WS80
+    if( v < 0.8) {led_error(1); log_i("V_Batt read error: ", v);} // bad reading
+    if( v < 3.4) {batt_p = 0; switch_WS_power(0);} // Turn off power for WSXX
+    if( v > 3.4)  {batt_p = 0; }
     if( v > 3.5)  {batt_p = 0; switch_WS_power(1); undervoltage = false;}
     if( v > 3.55) {batt_p = 10;}
     if( v > 3.65) {batt_p = 20;}
@@ -625,8 +609,7 @@ void baro_start_reading(){
       next_baro_reading = time() + bmp280.startMeasurment();
     }
     if(baro_chip == BARO_SPL06){ 
-      //log_i("Baro start ", time());
-      //spl.start_measure();
+      spl.start_measure();
       next_baro_reading = time() + 27;
     }
     if(baro_chip == BARO_BMP3xx){ 
@@ -640,7 +623,6 @@ void baro_start_reading(){
     } else {
       if(time() > (next_baro_reading +200)){
         next_baro_reading = 0;
-        //log_i("Baro timeout ", time());
       }
     }
 }
@@ -663,11 +645,10 @@ void read_baro(){
     if(next_baro_reading && (time() > next_baro_reading)){
       P = spl.get_pressure();
       T = spl.get_temp_c();
-      //spl.sleep(); 
+      spl.sleep(); 
       
       if(P > 0){
         data_ok = true;
-        //log_i("Baro finish ", time());
       }
     }
   }
@@ -682,7 +663,7 @@ void read_baro(){
     baro_temp = T;
     next_baro_reading = 0;
     if (altitude > -1){
-        baro_pressure = (P * pow(1-(0.0065*altitude/(temperature + (0.0065*altitude) + 273.15)),-5.257));
+        baro_pressure = (P * pow(1-(0.0065*altitude/(T + (0.0065*altitude) + 273.15)),-5.257));
     } else {
       baro_pressure = P;
     }
@@ -693,12 +674,12 @@ void read_baro(){
 }
 
 // while USB is connected, forward ws80 data to usb serial port
-void forward_ws80_serial(){
+void forward_wsxx_serial(){
   if(forward_serial_while_usb){
     static char buffer [512];
     static int bufferpos = 0;
-    while (WS80_UART.available()){
-      buffer[bufferpos] = WS80_UART.read();
+    while (WSXX_UART.available()){
+      buffer[bufferpos] = WSXX_UART.read();
       bufferpos++;
       if(bufferpos > 512){bufferpos =0;}
     
@@ -754,20 +735,20 @@ void read_wsdat(){
   static char buffer [50];
   int co = 0;
   uint32_t last_data = micros();
-  led_error(1);
+  //led_error(1);
 
   while( (micros()- last_data < 2000) ){ // 
-    while (WS80_UART.available()){
+    while (WSXX_UART.available()){
       led_status(1);
-      buffer[co] = WS80_UART.read();
+      buffer[co] = WSXX_UART.read();
       last_data = micros();
       //DEBUGSER.write(buffer[co]);
       if(buffer[co] == '*'){
         //DEBUGSER.println();
         if(parse_wsdat(buffer, co)){
           co = 0;
-          led_status(0);
-          led_error(0);
+          //led_status(0);
+          //led_error(0);
           return;
         }
         co = 0;
@@ -781,41 +762,96 @@ void read_wsdat(){
       }
     }
   } 
-led_error(0);
+//led_error(0);
 }
 
 // read UART and process input buffer, needs to be called periodically until new block is complete (last_ws80_data = time())
-bool read_ws80(){
+// 2: data complete
+// 1: error
+// 0: data ok, continue
+int read_wsxx(){
+  #define BUFFERSIZE 1024 // size of linebuffer
   static char buffer [BUFFERSIZE];
-  static int co = 0;
+  int co = 0;
+  bool found_data = false;
+  int eq_count = 0;
   uint32_t last_data = micros();
-  uint32_t cpy_last_ws80_data = last_ws80_data;
+  //uint32_t cpy_last_wsxx_data = last_wsxx_data;
+  static uint32_t serial_wait = 3800;
 
-  while( cpy_last_ws80_data == last_ws80_data &&(micros()- last_data < 1900)){ // 
-    while (WS80_UART.available()){
+// Compare String 1
+  char comp1_arr[8] = {"FreqSel"};
+  const int comp1_len = 7;
+  int comp1_pos = 0;
+
+// Compare String 2
+  char comp2_arr[5];
+  if(is_ws85){ sprintf(comp2_arr,"WS85");}
+  else if(is_ws80){ sprintf(comp2_arr,"WH80");}
+  const int comp2_len = 4;
+  int comp2_pos = 0;
+
+  //uint32_t micros_start = micros();
+
+
+  while(micros()- last_data < serial_wait){ //  cpy_last_wsxx_data == last_wsxx_data &&
+    while (WSXX_UART.available()){
       //led_error(1); // blink LED, for debugging
-      buffer[co] = WS80_UART.read();
-      last_data = micros();
-      if(buffer[co] == '\n'){
-        if(forward_serial_while_usb && usb_connected){
-          Serial.write(buffer, co);
+      buffer[co] = WSXX_UART.read();
+      if(buffer[co] < 127){ // skip garbage
+        if(buffer[co] == '=') {eq_count++;} else {eq_count =0;}
+
+        if(buffer[co] == comp1_arr[comp1_pos]) {comp1_pos++;} 
+        else {comp1_pos=0;}
+
+        if(buffer[co] == comp2_arr[comp2_pos]) {comp2_pos++;} 
+        else {comp2_pos=0;}
+
+        if((comp1_pos == comp1_len) ||(comp2_pos == comp2_len)){ // if we found or pattern, increase wait time to get full block
+          found_data = true;
+          if(is_ws80){ serial_wait = 500;}
+          else if(is_ws85){ serial_wait = 3800;}
         }
-        if(process_line(buffer, co, &set_value)){ // Line complete
+
+        last_data = micros();
+        co++;
+
+
+        if(found_data && eq_count > 35) { // block ends with 37x =, if detected, lower wait time
+          serial_wait = 1;
+        }
+        
+        if(co >= BUFFERSIZE){
+          log_e("Buffer size exeeded\r\n");
           co = 0;
-          return true;
+          //led_error(0);
+          return RESP_ERROR;
         }
-        co = -1; // gets +1 below
-      }
-      co++;
-      if(co >= BUFFERSIZE){
-        log_e("Buffer size exeeded\r\n");
-        //led_error(0);
-        return false;
       }
     }
     //led_error(0);
-  } 
-  return false;
+  }
+
+// now parse buffer content
+if(found_data){
+  int i =0;
+  int pos = 0;
+  while (i < co){
+    if(buffer[i] == '\n'){
+          if(test_with_usb && usb_connected){
+            Serial.write(&buffer[pos], i-pos);
+          }
+          if(process_line(&buffer[pos], i-pos-1, &set_value)){
+            serial_wait = 120; // decrease value if one valid measuremnt was fount to dertimne if it is ws80 or ws85
+            return RESP_COMPLETE;
+          }
+      pos = i+1;
+    }
+    i++;
+
+  }
+}
+  return RESP_OK;
 }
 
 // Davis 6410 Sensor ----------------------------------------------------------------------------------------------------------------------
@@ -950,9 +986,11 @@ void wakeup_EIC(){
 uint32_t sleep_til_serial_data(){
   uint32_t sleepcounter =0;
   //log_i("sleep\r\n"); log_flush();
+  log_flush();
+  WSXX_UART.end();
   attachInterruptWakeup(PIN_RX, wakeup_EIC, FALLING, false);
   sleep(false); // false
-  WS80_UART.begin(115200*div_cpu); // begin again, because we used the RX pin as wakeup interrupt.
+  WSXX_UART.begin(115200*div_cpu); // begin again, because we used the RX pin as wakeup interrupt.
   detachInterrupt(PIN_RX);
   sleepcounter = read_time_counter();
   //log_i("Actual_sleep: ", sleepcounter);
@@ -965,8 +1003,8 @@ uint32_t sleep_til_serial_data(){
 // called after sleep
 void wakeup(){
   // USB->DEVICE.CTRLA.reg |= USB_CTRLA_ENABLE; // Re-enable USB, no need, not working?
-  log_i("\r\n\r\n\r\n#####################");
-  log_i("\r\nWakeup: ", time()); 
+  log_i("\r\n########\r\n");
+  log_i("Wakeup: ", time()); 
   log_i("Wakeup_source: "); log_i(wakeup_source_string[wakeup_source]);log_i("\r\n");
   wakeup_source = WAKEUP_NONE;
 
@@ -989,42 +1027,57 @@ uint32_t calc_time_to_sleep(){
   uint32_t tts_info = -1;
   uint32_t tts = 0;
 
-  if( last_msg_weather && broadcast_interval_weather){
-    if( (last_msg_weather + broadcast_interval_weather) > time() ){
-      tts_weather = broadcast_interval_weather - (time()-last_msg_weather);
+  if(batt_volt){
+    if(batt_volt < VBATT_LOW){
+      tts = 3600*500; // sleep 30min
+      undervoltage = true;
+      broadcast_scale_factor = 5;
+      log_i("Undervoltage\n");
+    } else if(batt_volt < reduce_interval_voltage){
+      reduced_interval = true;
+      broadcast_scale_factor = 3;
+      log_i("Low voltage\n");
     } else {
-      tts_weather = 0;
+      // battery voltage is normal
+      reduced_interval = false;
+      broadcast_scale_factor = 1;
     }
-  }
-  if( last_msg_name && broadcast_interval_name){
-    if( (last_msg_name + broadcast_interval_name) > time()){
-      tts_name = broadcast_interval_name - (time()-last_msg_name);
-    } else {
-      tts_name = 0;
-    }
-  }
-  if( last_msg_info && broadcast_interval_info){
-    if( (last_msg_info + broadcast_interval_info) > time()){
-      tts_info = broadcast_interval_info - (time()-last_msg_info);
-    }else {
-      tts_info = 0;
-    }
-  }
-  //log_i("tts_weather: ", tts_weather);
-  //log_i("tts_name: ", tts_name);
-  //log_i("tts_info: ", tts_info);
-  
-  tts = min(min(tts_name, tts_info), tts_weather);
-  if( fanet_cooldown && last_fnet_send  && (time() - last_fnet_send + tts < fanet_cooldown)){
-    tts += fanet_cooldown - (time()-last_fnet_send);
-    }
-  if(tts == (uint32_t)-1){ tts=0;}
 
-  if(batt_volt && batt_volt < VBATT_LOW){
-    tts = 3600*500; // sleep 30min
-    undervoltage = true;
-    log_i("Undervoltage");
+
   }
+  if(!undervoltage){
+    if( last_msg_weather && broadcast_interval_weather){
+      if( (last_msg_weather + (broadcast_interval_weather * broadcast_scale_factor)) > time() ){
+        tts_weather = (broadcast_interval_weather * broadcast_scale_factor) - (time()-last_msg_weather);
+      } else {
+        tts_weather = 0;
+      }
+    }
+    if( last_msg_name && broadcast_interval_name){
+      if( (last_msg_name + (broadcast_interval_name * broadcast_scale_factor)) > time()){
+        tts_name = (broadcast_interval_name * broadcast_scale_factor) - (time()-last_msg_name);
+      } else {
+        tts_name = 0;
+      }
+    }
+    if( last_msg_info && broadcast_interval_info){
+      if( (last_msg_info + (broadcast_interval_info * broadcast_scale_factor)) > time()){
+        tts_info = (broadcast_interval_info * broadcast_scale_factor) - (time()-last_msg_info);
+      }else {
+        tts_info = 0;
+      }
+    }
+    //log_i("tts_weather: ", tts_weather);
+    //log_i("tts_name: ", tts_name);
+    //log_i("tts_info: ", tts_info);
+    
+    tts = min(min(tts_name, tts_info), tts_weather);
+    if( fanet_cooldown && last_fnet_send  && (time() - last_fnet_send + tts < fanet_cooldown)){
+      tts += fanet_cooldown - (time()-last_fnet_send);
+    }
+    if(tts == (uint32_t)-1){ tts=0;}
+  }
+
   return tts;
 }
 
@@ -1044,7 +1097,7 @@ void go_sleep(){
   pinDisable(PIN_V_READ_TRIGGER);
 
 // shut down the USB peripheral
-  if(first_sleep && !(test_with_usb)){
+  if(first_sleep && !(test_with_usb || usb_connected) ){
     log_i("Disable USB\n");
     USB->DEVICE.CTRLA.bit.ENABLE = 0;                   
     while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
@@ -1062,15 +1115,18 @@ void go_sleep(){
   }
 
   int32_t time_to_sleep = calc_time_to_sleep();
-  if(last_ws80_data == 0){ time_to_sleep = 12000;} // if no data from WS80 received 
-  if(!settings_ok){ 
-    log_e("No settings file\n");
-    log_e("Sleeping forever\r\n");
-    time_to_sleep = 0xFFFFFFF;
-    } // if settings not ok sleep forever
+  if(!undervoltage){
+    if(is_wsxx && last_wsxx_data == 0){ time_to_sleep = 12000;} // if no data from WS80 received 
+    if(is_davis6410){ time_to_sleep = min(time_to_sleep, sensor_integration_time);} // interval for gust detection 
+    if(!settings_ok){ 
+      log_e("No settings file\n");
+      log_e("Sleeping forever\r\n");
+      time_to_sleep = 0xFFFFFFF;
+      } // if settings not ok sleep forever
+  }
   if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
-  log_i("will sleep for ", time_to_sleep > 20000?-1: time_to_sleep);
+  log_i("will sleep for ", time_to_sleep > 200000UL?-1: time_to_sleep);
   log_flush();
 
 // disable wdt during sleep
@@ -1093,17 +1149,21 @@ void go_sleep(){
     //}
 
 // UART sensor, just sleep
-  } else if(!undervoltage && is_ws80){ // no pulse counting anemometer, no interrupts
+  } else if(!undervoltage && is_wsxx){ // no pulse counting anemometer, no interrupts
     int32_t t =0;
+    int res = -1;
     if(settings_ok && (time()> 2500)  && !usb_connected && !no_sleep && !testmode){
       reset_time_counter();
       actual_sleep = rtc_sleep_cfg(time_to_sleep);
       while(wakeup_source != WAKEUP_RTC){
         t = sleep_til_serial_data();
-        if(read_ws80()){ // if true, we received a data block, so it is ok to sleep for ~ 4 seconds without listening to serial data
+        res = read_wsxx();
+        if(res == RESP_COMPLETE){ // if true, we received a data block, so it is ok to sleep for ~ 4 seconds without listening to serial data
           if(time_to_sleep > t ){
-            actual_sleep = rtc_sleep_cfg( ((time_to_sleep - t) < 4685) ? time_to_sleep - t:4685); // sleep 4750ms if tts is still longer, or less if it less
-            //log_i("will sleep1: ", actual_sleep); log_flush();
+            if(is_ws85){actual_sleep = rtc_sleep_cfg( min(time_to_sleep - t,8350));}
+            if(is_ws80){actual_sleep = rtc_sleep_cfg( min(time_to_sleep - t,4685));} // sleep 4750ms if tts is still longer, or less if it less
+            //log_i("will sleep1: ", actual_sleep); 
+            //log_flush();
             sleep(false);
             t = read_time_counter();
             if(time_to_sleep > t ){
@@ -1124,13 +1184,15 @@ void go_sleep(){
   } else { // no sensor configured
     actual_sleep = rtc_sleep_cfg(time_to_sleep);
     log_flush();
+    //PM_sleep();
     sleep(false);
+    //PM_wakeup();
     sleeptime_cum += actual_sleep;
   }
 
 // If sleep is disabled for debugging, use delay
   if(!usb_connected && (no_sleep || testmode)){
-    log_i("INSOMNIA or Testmode enabled, unsing delay() instead of deepsleep");
+    log_i("INSOMNIA or Testmode enabled, unsing delay() instead of deepsleep\n");
     delay(time_to_sleep);
     sleeptime_cum += time_to_sleep;
   }
@@ -1151,70 +1213,80 @@ void go_sleep(){
 
 // Settings ----------------------------------------------------------------------------------------------------------------------
 bool apply_setting(char* settingName,  char* settingValue){
-  if(debug_enabled){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
+  //if(debug_enabled){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
   
-  if(strcmp(settingName,"NAME")==0) {station_name = settingValue; return true;}
-  if(strcmp(settingName,"LON")==0) {pos_lon = atof(settingValue); return true;}
-  if(strcmp(settingName,"LAT")==0) {pos_lat = atof(settingValue); return true;}
-  if(strcmp(settingName,"ALT")==0) {altitude = atof(settingValue); return true;}
+  if(strcmp(settingName,"NAME")==0) {station_name = settingValue; return 1;}
+  if(strcmp(settingName,"LON")==0) {pos_lon = atof(settingValue); return 1;}
+  if(strcmp(settingName,"LAT")==0) {pos_lat = atof(settingValue); return 1;}
+  if(strcmp(settingName,"ALT")==0) {altitude = atof(settingValue); return 1;}
 
 #ifdef HAS_HEATER
-  if(strcmp(settingName,"HEATER")==0) {is_heater = atoi(settingValue); return true;}
-  if(strcmp(settingName,"V_HEATER")==0) {heater_voltage  = atof(settingValue); return true;}
-  if(strcmp(settingName,"V_MPPT")==0) { mppt_voltage = atof(settingValue); return true;}
+  if(strcmp(settingName,"HEATER")==0) {is_heater = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"V_HEATER")==0) {heater_voltage  = atof(settingValue); return 1;}
+  if(strcmp(settingName,"V_MPPT")==0) { mppt_voltage = atof(settingValue); return 1;}
 #endif
 
-  if(strcmp(settingName,"HEADING_OFFSET")==0) {heading_offset = atoi(settingValue); return true;}
-  if(strcmp(settingName,"GUST_AGE")==0) {gust_age = atoi(settingValue)*1000; return true;}
-  if(strcmp(settingName,"WIND_AGE")==0) {wind_age = atoi(settingValue)*1000; return true;}
+  if(strcmp(settingName,"REDU_INTERV_VOLT")==0) { reduce_interval_voltage = atof(settingValue); return 1;}
+
+  if(strcmp(settingName,"HEADING_OFFSET")==0) {heading_offset = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"GUST_AGE")==0) {gust_age = (uint32_t)atoi(settingValue)*1000; return 1;}
+  if(strcmp(settingName,"WIND_AGE")==0) {wind_age = (uint32_t)atoi(settingValue)*1000; return 1;}
   
-  if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {broadcast_interval_weather = atoi(settingValue)*1000; return true;}
-  if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0) {broadcast_interval_name = atoi(settingValue)*1000; return true;}
-  if(strcmp(settingName,"BROADCAST_INTERVAL_INFO")==0) {broadcast_interval_info = atoi(settingValue)*1000; return true;}
+// Broadcast intervals in seconds, 0 = disable
+  if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {broadcast_interval_weather = (uint32_t)atoi(settingValue)*1000; return 1;}
+  if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0) {broadcast_interval_name = (uint32_t)atoi(settingValue)*1000; return 1;}
+  if(strcmp(settingName,"BROADCAST_INTERVAL_INFO")==0) {broadcast_interval_info = (uint32_t)atoi(settingValue)*1000; return 1;}
 
-  if(strcmp(settingName,"SENSOR_BARO")==0) {is_baro = atoi(settingValue); return true;}
-  if(strcmp(settingName,"SENSOR_BMP280")==0) {is_baro = atoi(settingValue); return true;} // for backward compatibility, may be removed some time
-  if(strcmp(settingName,"SENSOR_DAVIS6410")==0) {is_davis6410 = atoi(settingValue); return true;}
-  if(strcmp(settingName,"SENSOR_WS80")==0) {is_ws80 = atoi(settingValue); return true;}
+  if(strcmp(settingName,"SENSOR_BARO")==0) {is_baro = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_DAVIS6410")==0) {is_davis6410 = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_WSXX")==0) {is_wsxx = atoi(settingValue); return 1;} // auto detection
+  if(strcmp(settingName,"SENSOR_WS80")==0) {is_ws80 = atoi(settingValue); return 1;} // keep for comatibility with old settings file
+  if(strcmp(settingName,"SENSOR_WS85")==0) {is_ws85 = atoi(settingValue); return 1;}
 
-  if(strcmp(settingName,"SENSOR_GPS")==0) {is_gps = atoi(settingValue); return true;}
-  if(strcmp(settingName,"GPS_BAUD")==0) {gps_baud = atoi(settingValue); return true;}
+// Davis 6410 specific
+  if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {sensor_integration_time = atoi(settingValue); return 1;}
 
-  if(strcmp(settingName,"DEBUG")==0) {debug_enabled = atoi(settingValue); return true;}
-  if(strcmp(settingName,"ERRORS")==0) {errors_enabled = atoi(settingValue); return true;}
-  if(strcmp(settingName,"INSOMNIA")==0) {no_sleep = atoi(settingValue); return true;}
-  if(strcmp(settingName,"TEST_USB")==0) {test_with_usb = atoi(settingValue); return true;}
-  if(strcmp(settingName,"TESTMODE")==0) {testmode = atoi(settingValue); return true;}
-  if(strcmp(settingName,"WDT")==0) {use_wdt = atoi(settingValue); return true;}
-  if(strcmp(settingName,"DIV_CPU_SLOW")==0) {div_cpu_slow = atoi(settingValue); return true;}
-  if(strcmp(settingName,"FORWARD_UART")==0) {forward_serial_while_usb = atoi(settingValue); return true;}
-  
+  if(strcmp(settingName,"SENSOR_GPS")==0) {is_gps = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"GPS_BAUD")==0) {gps_baud = atoi(settingValue); return 1;}
 
-  if(strcmp(settingName,"GPS_BEACON")==0) {is_beacon = atoi(settingValue); return true;}
+  if(strcmp(settingName,"DEBUG")==0) {debug_enabled = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"ERRORS")==0) {errors_enabled = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"INSOMNIA")==0) {no_sleep = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"TEST_USB")==0) {test_with_usb = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"TESTMODE")==0) {testmode = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"WDT")==0) {use_wdt = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"DIV_CPU_SLOW")==0) {div_cpu_slow = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"FORWARD_UART")==0) {forward_serial_while_usb = atoi(settingValue); return 1;}
 
 // Test commands
-  if(strcmp(settingName,"TEST_HEATER")==0) {test_heater = atoi(settingValue); return true;}
-  if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return true;}
-  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return true;}
-  if(strcmp(settingName,"RESET")==0) {setup(); return true;}
-  if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return true;} // delay for WDT testing
-  if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return true;}
-  return false;
+  if(strcmp(settingName,"TEST_HEATER")==0) {test_heater = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
+  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
+  if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
+  if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
+  if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return 1;}
+  return 0;
 }
 
 void print_settings(){
   if(debug_enabled){
     log_i("Name: "); log_i(station_name.c_str()); log_i("\r\n");
-    log_i("Lon: ", pos_lon);
-    log_i("Lat: ", pos_lat);
-    log_i("Alt: ", altitude);
+    //log_i("Lon: ", pos_lon);
+    //log_i("Lat: ", pos_lat);
+    //log_i("Alt: ", altitude);
     log_flush();
   #ifdef HAS_HEATER
-    log_i("Heater Voltage: ", heater_voltage);
-    log_i("MPPT Voltage: ", mppt_voltage);
+    if(hw_version == HW_1_3){
+      log_i("Heater voltage: ", heater_voltage);
+      log_i("MPPT voltage: ", mppt_voltage);
+    }
   #endif
-    log_i("Heading Offset: ", heading_offset); 
-    log_i("Broadcast Interval Weather: ", broadcast_interval_weather);
+    log_i("Heading offset: ", heading_offset); 
+    log_i("Broadcast interval weather [s]: ", broadcast_interval_weather/1000);
+    if(is_ws80){log_i("Sensor: WS80\n");}
+    if(is_ws85){log_i("Sensor: WS85\n");}
+    if(is_wsxx && !(is_ws80 || is_ws85)){log_i("Sensor: WSXX Auto detect\n");}
+    if(is_davis6410){log_i("Sensor: DAVIS 6410\n");}
     log_flush();
   }
 }
@@ -1232,8 +1304,8 @@ void print_data(){
     log_i("Baro: ", baro_pressure);
     log_i("PCB_Temp: ", baro_temp);
     }
-    if(is_ws80) {
-      log_i("VCC: ", ws80_vcc);
+    if(is_wsxx) {
+      log_i("VCC: ", wsxx_vcc);
       //log_i("LUX: ", light_lux);
       //log_i("UV: ", uv_level);
     }
@@ -1260,8 +1332,8 @@ bool create_versionfile(char * filename){
     if (f) {
       log_i("Creating version file\n");
       f.print("Version: "); f.println(VERSION);
-      f.print("FW Build: ") + f.print(__DATE__); f.println(__TIME__);
-      f.print("FANET ID: "); f.print(FANET_VENDOR_ID,HEX); f.println(UniqueID[0] + ((UniqueID[1])<<8),HEX);
+      f.print("FW Build: "); f.print(__DATE__); f.println(__TIME__);
+      f.print("FANET ID: "); f.print(FANET_VENDOR_ID,HEX); f.println(get_fanet_id(),HEX);
       f.print("HW Version: "); 
         if(hw_version == HW_1_3) { f.println("V1.3");}
         if(hw_version == HW_2_0) { f.println("V2.0");}
@@ -1287,39 +1359,38 @@ bool create_versionfile(char * filename){
 
 // parse settingsfile
 bool parse_file(char * filename){
+  #define LINEBUFFERSIZE 512
   bool ret = false;
   led_status(1);
   File f;
-  char filebuffer [BUFFERSIZE];
+  char linebuffer [LINEBUFFERSIZE];
   int c = 0;
   int co = 0;
   int filesize =0;
-  log_i("Reading Settings from file\r\n");
+  //log_i("Reading Settings from file\r\n");
 
   if (fatfs.begin(&flash) ){
     f = fatfs.open(filename, FILE_READ);
     if (f) {
         filesize = f.available();
-        log_i("Filesize: ", filesize);
+        //log_i("Filesize: ", filesize);
         while (filesize - c > 0) {
-          filebuffer[co] = f.read();
+          linebuffer[co] = f.read();
 
-          if(filebuffer[co] == '\n'){
-            process_line(filebuffer, co, &apply_setting); // Line complete
+          if(linebuffer[co] == '\n'){
+            process_line(linebuffer, co, &apply_setting); // Line complete
             co=-1; // gets +1 below
           }
           c++;
           co++;
-          if(co >= BUFFERSIZE){
+          if(co >= LINEBUFFERSIZE){
             log_e("File buffer error\r\n");
             return false;
           }
         }
-        //DEBUGSER.println("End of file");
-        process_line(filebuffer, co, &apply_setting);
+        process_line(linebuffer, co, &apply_setting);
         f.close();
-        log_i("Settingsfile closed\n");
-        //DEBUGSER.println("file closed");
+        //log_i("Settingsfile closed\n");
         if(pos_lat != 0 && pos_lon != 0){
           ret = true;
         }
@@ -1334,6 +1405,7 @@ bool parse_file(char * filename){
   if(!ret){
     led_status(0);
     led_error(1);
+    log_e("Coordinates invalid\n");
     }
   return ret;
 }
@@ -1341,7 +1413,8 @@ bool parse_file(char * filename){
 // Serial reads ----------------------------------------------------------------------------------------------------------------------
 // read serial data from USB, for debugging
 void read_serial_cmd(){
-  static char buffer [BUFFERSIZE];
+  #define CMDBUFFERSIZE 127
+  static char buffer [CMDBUFFERSIZE];
   static int co = 0;
   bool ok = false;
 
@@ -1370,7 +1443,6 @@ void read_serial_cmd(){
 void send_msg_weather(){
   led_status(1);
   WindSample current_wind = get_wind_from_hist(wind_age);
-
   wind_gust = get_gust_from_hist(gust_age);
   wind_speed = current_wind.wind/10.0;
   wind_dir_raw = current_wind.dir_raw;
@@ -1378,10 +1450,18 @@ void send_msg_weather(){
   if(wind_heading > 359){ wind_heading -=360;}
   if(wind_heading < 0){ wind_heading +=360;}
 
-  if( wind_speed > (wind_gust +3)){return;}
+  if(is_davis6410){ // no other temp sensor
+    temperature= baro_temp;
+  } 
+  if( wind_speed > (wind_gust +3)){
+    // return;
+    wind_gust = wind_speed;
+    log_i("adapting gust speed\r\n");
+  }
+
   weatherData wd;
   wd.vid = FANET_VENDOR_ID;
-  wd.fanet_id =  UniqueID[0] + ((UniqueID[1])<<8);
+  wd.fanet_id = get_fanet_id();
   wd.lat = pos_lat;
   wd.lon = pos_lon;
   wd.bWind = true;
@@ -1390,13 +1470,17 @@ void send_msg_weather(){
   wd.wGust = wind_gust;      
   wd.bTemp = true;
   wd.temp = temperature;
-  wd.bHumidity = true;
-  wd.Humidity = humidity;
+
+  if(is_wsxx){
+    wd.bHumidity = true;
+    wd.Humidity = humidity;
+  }
+
   if(is_baro){
     wd.bBaro = true;
-    wd.Baro = baro_pressure;    
+    wd.Baro = baro_pressure;  
   } else {
-    wd.bBaro = true;
+    wd.bBaro = true; // baro is required to forward data in OGN
     wd.Baro = -1;  
   }
   wd.bStateOfCharge = true;
@@ -1448,13 +1532,18 @@ bool allowed_to_send_weather(){
 
   if (ok){
     if(is_baro){ok &= (next_baro_reading == 0);}
-    if(is_ws80) { ok &= (last_ws80_data || testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
+    if(is_wsxx) { ok &= (last_wsxx_data || testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
     if(is_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
   }
 
   if(!ok){
-    if(last_ws80_data){
+    if(last_wsxx_data){
       //log_i("WS80 data age: ", time()- last_ws80_data);
+    }
+    if(is_gps){
+      if(time()-last_gps_valid > 3000){
+        log_i("No GPS fix");
+      }
     }
   }
 
@@ -1472,6 +1561,7 @@ void read_gps(){
         pos_lat = tinyGps.location.lat();
         pos_lon = tinyGps.location.lng();
         altitude = tinyGps.altitude.meters();
+        last_gps_valid = time();
         //DEBUGSER.println("Position Update");
     }
   }
@@ -1479,21 +1569,20 @@ void read_gps(){
 
 // check if last fanet package want sent recenctly
 bool fanet_cooldown_ok(){
-  if(time() -last_fnet_send > fanet_cooldown){
+  if(lora_module && (time() -last_fnet_send > fanet_cooldown)){
     return true;
   }
   return false;
 }
 
-void send_name(const char* name, int len){
-
+void send_msg_name(const char* name, int len){
   uint8_t* buffer = new uint8_t[len+4];
   fanet_header header;
   header.type = 2;
   header.vendor = FANET_VENDOR_ID;
   header.forward = false;
   header.ext_header = false;
-  header.address = UniqueID[0] + ((UniqueID[1])<<8);
+  header.address = get_fanet_id();
 
   memcpy(buffer, (uint8_t*)&header, 4);
   memcpy(&buffer[4], name, len);
@@ -1510,6 +1599,36 @@ void send_name(const char* name, int len){
   radio_phy->startTransmit((uint8_t*) buffer, len+4);
 }
 
+void send_msg_info(){
+  char data[50] = {0x00};
+  uint8_t data_len = 1;
+  // Test: send battery voltage and charging state
+  data_len += sprintf(&data[1], "%04X:%s %0.2fV C%i", get_fanet_id(), VERSION, batt_volt, pv_charging);
+
+
+  uint8_t* buffer = new uint8_t[data_len+4];
+  fanet_header header;
+  header.type = 3;
+  header.vendor = FANET_VENDOR_ID;
+  header.forward = false;
+  header.ext_header = false;
+  header.address = get_fanet_id();
+
+  memcpy(buffer, (uint8_t*)&header, 4);
+  memcpy(&buffer[4], data, data_len);
+
+// write buffer content to console
+#if 1
+  for (int i = 0; i< data_len+4; i++){
+    printf("%02X ", (buffer)[i]);
+  }
+  Serial1.println();
+#endif
+  log_i("Sending Info Msg\n");
+  radio_phy->standby();
+  radio_phy->startTransmit((uint8_t*) buffer, data_len+4);
+}
+
 
 bool radio_init(){
     if(radio_sx1276.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE){
@@ -1517,12 +1636,14 @@ bool radio_init(){
       log_i("Found LoRa SX1276\n");
       lora_module = LORA_SX1276;
       return true;
-    } else if(radio_llcc68.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
+    } 
+    if(radio_llcc68.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
       radio_phy = (PhysicalLayer*)&radio_llcc68;
       log_i("Found LoRa LLCC68\n");
       lora_module = LORA_LLCC68;
       return true;
-    } else if(radio_sx1262.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
+    }
+    if(radio_sx1262.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
       // NiceRF SX1262 issue https://github.com/jgromes/RadioLib/issues/689
       radio_phy = (PhysicalLayer*)&radio_sx1262;
       log_i("Found LoRa SX1262\n");
@@ -1557,15 +1678,11 @@ void setup(){
   i2c_scan();
 
   setup_display();
-
-  if(!radio_init()){
-    log_i("LoRa Module failed");
+  if(display_present()){
+    log_i("I2C Display enabled\n");
   }
-  radio_phy->setPacketSentAction(set_fanet_send_flag);
-  radio_phy->sleep();
-
+  
   //printf("FANET ID: %02X%04X\r\n",fmac.myAddr.manufacturer,fmac.myAddr.id);
-
   if(setup_flash()){
     settings_ok = parse_file(SETTINGSFILE);
     if(!debug_enabled){
@@ -1573,13 +1690,23 @@ void setup(){
     }
   }
 
+    if(radio_init()){
+    radio_phy->setPacketSentAction(set_fanet_send_flag);
+    radio_phy->sleep();
+  } else { 
+    led_error(1);
+    display_delay(2000);
+  }
+
+
   if(settings_ok){
-    led_error(0);
+    is_wsxx |= (is_ws80 || is_ws85);
+    //led_error(0);
     // Add altitude to station name, gets splittet by breezedude ogn parser
     if(altitude > -1){
       station_name += " (" + String(int(altitude)) + "m)"; // Testation (1234m)
     }
-    setup_PM(is_davis6410); // powermanagement add || other sensors using counter
+    setup_PM(is_wsxx); // powermanagement add || other sensors using 32bit counter
     wdt_enable(WDT_PERIOD,false); // setup clocks
     if(!use_wdt) {
       wdt_disable();
@@ -1589,22 +1716,23 @@ void setup(){
     if(!baro_ok && bmp280.begin()){ //0x76
       baro_ok = true;
       baro_chip = BARO_BMP280;
-      log_i("BMP280 setup ok\r\n");
+      log_i("Baro: BMP280\r\n");
       bmp280.setOversampling(4);
     }
     if(!baro_ok && spl.begin(0x77)){
       baro_ok = true;
       baro_chip = BARO_SPL06;
-      log_i("SPL06 setup ok\r\n");
+      log_i("Baro: SPL06\r\n");
     }
     if(!baro_ok && bmp3xx.begin_I2C(0x76)){
       baro_ok = true;
       baro_chip = BARO_BMP3xx;
-      log_i("BMP3XX setup ok\r\n");
+      log_i("Baro: BMP3XX\r\n");
     }
     if(!baro_ok){
-      log_e("Baro not found\r\n");
+      log_e("Baro: not found\r\n");
       is_baro = false;
+      led_error(1);
     }
   }
   
@@ -1621,13 +1749,13 @@ hw_version = HW_2_0;
     setup_PM(false);
     wdt_enable(WDT_PERIOD,false); // setup clocks
     wdt_disable();
-    setup_rtc_time_counter();
+    //setup_rtc_time_counter();
   }
 
-  if(is_ws80){
+  if(is_wsxx){
     switch_WS_power(1); // Turn on WS80 Power supply with P-MOSFET (HW >= 2.2)
     setup_rtc_time_counter();
-    WS80_UART.begin(115200);
+    WSXX_UART.begin(115200);
   }
   if(is_gps){
     GPS_SERIAL.begin(gps_baud);
@@ -1646,8 +1774,8 @@ hw_version = HW_2_0;
   }
   // create_versionfile(VERSIONFILE); // create version file if not exists (not working)
   if(hw_version == HW_unknown){log_i("Hardware detection failed\n");}
-  if(hw_version == HW_1_3){log_i("Detected HW1.3\n");}
-  if(hw_version == HW_2_0){log_i("Detected HW2.0\n");}
+  if(hw_version == HW_1_3){log_i("Detected HW1.x\n");}
+  if(hw_version == HW_2_0){log_i("Detected HW2.x\n");}
   log_flush();
   wakeup();
 }
@@ -1669,8 +1797,8 @@ if(last_call && (time()-last_call > 15)){
 }
 if(usb_connected && time()-last_call > 500){
   //log_i("Time: ", time());
-  //Serial.println(millis());
-  Serial1.println(millis());
+  //Serial.println(time());
+  Serial1.println(time());
   // Store led states and restore after blink
   s = led_status(1);
   last_call=time();
@@ -1685,10 +1813,10 @@ if(usb_connected && time()-last_call > 500){
   if(is_baro){read_baro();}
   if(is_gps){read_gps();}
 
-  if(fanet_cooldown_ok() && broadcast_interval_name && ( (time()- last_msg_name) > broadcast_interval_name) ){ // once a hour
+  if(fanet_cooldown_ok() && broadcast_interval_name && ( (time()- last_msg_name) > (broadcast_interval_name* broadcast_scale_factor)) ){ // once a hour
     if(station_name.length() > 1){
       led_status(1);
-      send_name(station_name.c_str(),station_name.length());
+      send_msg_name(station_name.c_str(),station_name.length());
       log_i("Send name: "); log_i(station_name.c_str()); log_i("\r\n");
       last_fnet_send = time();
       last_msg_name = time();
@@ -1697,42 +1825,40 @@ if(usb_connected && time()-last_call > 500){
     }
   }
 
-#if 0 // not implemented yet
-  if(fanet_cooldown_ok() && broadcast_interval_info && ( (time()- last_msg_info) > broadcast_interval_info) ){
-    if(station_name.length() > 1){ // replace with message length
-      led_status(1);
-      //fanet.sendMSG("Testmessage");
-      log_i("Send message: "); log_i("Testmessage");
-      last_fnet_send = time();
-      last_msg_info = time();
-      send_active = time();
-      led_status(0);
-    }
-  }
-#endif
-
-  if(fanet_cooldown_ok() && broadcast_interval_weather && ( (time()- last_msg_weather) > broadcast_interval_weather) ){
+  if(fanet_cooldown_ok() && broadcast_interval_weather && ( (time()- last_msg_weather) > (broadcast_interval_weather * broadcast_scale_factor)) ){
     if( allowed_to_send_weather() ){
       send_msg_weather();
       last_fnet_send = time();
       last_msg_weather = time();
       send_active = time();
     } else {
-      if(last_ws80_data && (time()- last_ws80_data > 7000)){
+      if(is_wsxx && last_wsxx_data && (time()- last_wsxx_data > 9000)){
         log_e("Wdata not ready. Sleep\r\n");
         sleep_allowed = time() + 1;
-        last_ws80_data = 0;
+        last_wsxx_data = 0;
       }
       
     }
   }
+  if(broadcast_interval_info && fanet_cooldown_ok() && ( (time()- last_msg_info) > (broadcast_interval_info * broadcast_scale_factor)) ){
+      led_status(1);
+      send_msg_info();
+      last_fnet_send = time();
+      last_msg_info = time();
+      send_active = time();
+      led_status(0);
+  }
 
   if(send_active){
     if( (time()- send_active > (3500))){
+      led_error(1);
       log_i("Send timed out\r\n");
+      led_status(0);
       send_active =0;
       sleep_allowed = time() + (1);
       radio_phy->sleep();
+      delay(10);
+      led_error(0);
     }
 
     if(transmittedFlag){
@@ -1752,7 +1878,7 @@ if(usb_connected && time()-last_call > 500){
 
   if(!settings_ok){ // Settings not ok. Try few times, then sleep
     if(!sleep_allowed){ 
-      sleep_allowed = time() + 180000; // Sleep after 3 minutes
+      sleep_allowed = time() + 180000UL; // Sleep after 3 minutes
     }
     if(time()- last_settings_check > 15000){
       last_settings_check = time();
@@ -1766,13 +1892,19 @@ if(usb_connected && time()-last_call > 500){
 
   // during Dev
   if(usb_connected){
-    if(test_with_usb){read_ws80();} // to simulate normal behavior without sleep read and parse data from serial port
-    else {forward_ws80_serial();} // otherwise just forward the data
+    if(test_with_usb){read_wsxx();} // to simulate normal behavior without sleep read and parse data from serial port
+    else {forward_wsxx_serial();} // otherwise just forward the data
     read_serial_cmd(); // read setting values from serial for testing
-    if(!no_sleep && !test_with_usb && (time() > 15*60*1000)){
+    if(!no_sleep && !test_with_usb && (time() > 15UL*60UL*1000UL)){
+      log_i("Restart\r\n");
+      log_flush();
       usb_connected = false;
       NVIC_SystemReset();
       } // keep usb alive for 15 min
+  }
+
+  if((time() > 5UL*60UL*1000UL)){ // trun off error LED after 5minutes to save energy if an error occures with no one around
+    led_error(0);
   }
 
   if(use_wdt){
@@ -1827,7 +1959,8 @@ DRESULT disk_ioctl (BYTE pdrv,BYTE cmd,	void *buff){
 }
 
 bool format_flash(){
-  uint8_t workbuf[4096]; // Working buffer for f_fdisk function.
+  //return false;
+  uint8_t workbuf[1024]; // Working buffer for f_fdisk function. 4096->1024, maybe we run out of heap?
   FRESULT r = f_mkfs12("", FM_FAT, 0, workbuf, sizeof(workbuf));
   if (r != FR_OK) {
      log_i("Error, f_mkfs failed with error code: ", r);
@@ -1884,7 +2017,7 @@ bool msc_writable_callback(void){
 }
 
 void setup_usb_msc(){
-  log_i("USB MSC Setup\n");
+  //log_i("USB MSC Setup\n");
     // Set disk vendor id, product id and revision with string up to 8, 16, 4 characters respectively
   usb_msc.setID("BrezeDu", "Mass Storage", "1.0");
    
@@ -1918,6 +2051,7 @@ bool setup_flash(){
   // The file system object from SdFat to read/write to the files in the internal flash
   int count = 0;
   while ( !fatfs.begin(&flash) ){
+
     if( (count == 0) && !format_flash()){
       log_e("Error: failed to FAT format flash\r\n");
       return false;
@@ -1960,7 +2094,6 @@ bool setup_flash(){
   //// list all files in the card with date and size
   //fatfs.ls(LS_R | LS_DATE | LS_SIZE);
 #endif
-
   return true; 
 }
 
@@ -1973,6 +2106,58 @@ bool setup_flash(){
 8V 650mA
 10V 800mA
 12V 980mA
+*/
+
+/*
+========== WS85 Ver:1.0.7 ===========
+>> g_RrFreqSel = 868M
+>> Device_ID  = 0x002794
+-------------------------------------
+WindDir      = 76
+WindSpeed    = 0.5
+WindGust     = 0.6
+GXTS04Temp   = 24.4
+
+UltSignalRssi  = 2
+UltStatus      = 0
+SwitchCnt      = 0
+RainIntSum     = 0
+Rain           = 0.0
+WaveCnt[CH1]   = 0
+WaveCnt[CH2]   = 0
+WaveRain       = 0
+ToaltWave[CH1] = 0
+ToaltWave[CH2] = 0
+ResAdcCH1      = 4095
+ResAdcSloCH1   = 0.0
+ResAdcCH2      = 4095
+ResAdcSloCH2   = 0.0
+CapVoltage     = 0.80V
+BatVoltage     = 3.26V
+=====================================
+
+========== WH80 Ver:1.2.8 ===========
+>> RF_FreqSel = 868M
+>> Device_ID  = 0x70014
+-------------------------------------
+WindDir      = 63
+WindSpeed    = 0.6
+WindGust     = 0.6
+
+-------SHT30--------
+Temperature  = 20.7
+Humi         = 56%
+
+-------Si1132-------
+Light        = 150 lux
+
+UV_Value     = 0.0
+
+Not Detected Pressure Sensor!
+Pressure     = --
+
+BatVoltage      = 3.26V
+=====================================
 */
 
 // WS80 extended serial output
