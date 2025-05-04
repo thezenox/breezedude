@@ -1,0 +1,6 @@
+This project (hardware and software) is licensed for non-commercial use only.
+
+Software portions: © 2025 Breezedude – Licensed under the CC BY-NC 4.0. 
+Hardware designs: © 2025 Breezedude – Licensed under the CC BY-NC 4.0.
+
+Commercial use (including use in for-profit projects, services, or manufacturing) is prohibited without a separate agreement. Contact me for licensing inquiries.
