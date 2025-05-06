@@ -244,7 +244,7 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   return (cycles * 1000L + 512) / 1024; // WDT cycles -> ms
 }
 
-void sleep(bool light) {
+void deepsleep(bool light) {
   // Enable standby sleep mode (deepest sleep) and activate.
   // Insights from Atmel ASF library.
 

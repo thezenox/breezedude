@@ -5,7 +5,7 @@
 
 void pinDisable(uint32_t pin);
 void configGCLK6(bool en_rtc);
-void sleep(bool light);
+void deepsleep(bool light);
 
 int wdt_enable(int maxPeriodMS, bool isForSleep);
 uint32_t rtc_sleep_cfg(uint32_t milliseconds);

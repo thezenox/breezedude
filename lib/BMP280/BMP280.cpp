@@ -48,8 +48,8 @@ char BMP280::begin()
 
 // Retrieve calibration data from device:
 char BMP280::readCalibration() {
-	double chipid = 0;
-	readUInt(0xD0, chipid);
+double chipid = 0;
+if(readUInt(0xD0, chipid)){
 	if(chipid != 0x58){return false;}
 	
 	if (    
@@ -109,6 +109,8 @@ char BMP280::readCalibration() {
 	}
 	else 
 		return (0);
+}
+return (0);
 }
 
 /*

@@ -2,6 +2,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <Wire.h>
 #include <BMP280.h>
+#include <HP203B.h> // https://github.com/ncdcommunity/Arduino_Library_HP203B_Barometer_Altimeter_Sensor/tree/master
 #include <SPL06.h>
 #include <Adafruit_BMP3XX.h>
 #include <LibPrintf.h>
@@ -38,8 +39,7 @@
 
 // Improvements
 // LDO: 
-// S-1313D33 1,5µA (200mA max)
-// HT7533-1 2.5µA (100mA max)?
+// STLQ015M33R 1,5µA (150mA max)
 
 //Power consumption:
 // Deepsleep 180µA (without WS80 sensor, davis speed and dir open)
@@ -112,6 +112,7 @@ Uart Serial2(&sercom1, PIN_SERCOM1_RX, PIN_SERCOM1_TX, SERCOM_RX_PAD_1, UART_TX_
 // I2C Barometer
 BMP280 bmp280; // Bosch BMP280
 SPL06 spl; // Goertek SPL06-001
+HP203B hp; // HP203B 0x76 or 0x77
 Adafruit_BMP3XX bmp3xx;
 // DPS310 as alternative?
 
@@ -208,7 +209,8 @@ enum BARO_CHIP{
   BARO_NONE,
   BARO_BMP280,
   BARO_SPL06,
-  BARO_BMP3xx
+  BARO_BMP3xx,
+  BARO_HP203B
 };
 
 // Sensor selction
@@ -244,6 +246,7 @@ uint32_t broadcast_scale_factor = 1; // multiplier for broadcast values. is set 
 uint32_t last_wsxx_data = 0;
 uint32_t last_fnet_send = 0; // last package send
 uint32_t fanet_cooldown = 4000;
+uint32_t loopcounter = 0;
 
 // debugging
 bool test_with_usb = false;
@@ -252,6 +255,7 @@ bool test_heater = false;
 bool debug_enabled = true; // enable uart debug messages
 bool errors_enabled = true;
 bool forward_serial_while_usb = false;
+bool skip_lora = false; // skip lora module init
 
 // Measurement values
 float baro_pressure = 0;
@@ -594,6 +598,7 @@ void read_batt_perc(){
     if( v > 4.15) {batt_p = 99;}
     if(( v > 4.15) && pv_done) {batt_p = 100;}
   }
+  log_i("V_Bat: ", batt_volt);
     batt_perc =  batt_p;
 }
 
@@ -619,6 +624,10 @@ void baro_start_reading(){
     // bmp3xx.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
       bmp3xx.performReading();
       next_baro_reading = time() + 5;
+    }
+    if(baro_chip == BARO_HP203B){ 
+      hp.startMeasure();
+      next_baro_reading = time() + 100; //? check value
     }
     } else {
       if(time() > (next_baro_reading +200)){
@@ -658,6 +667,16 @@ void read_baro(){
     bmp3xx.setOutputDataRate(BMP3_ODR_0_001_HZ);
     if(P > 0){data_ok = true;}
   }
+  else if(baro_chip == BARO_HP203B){ 
+
+    hp.Measure_Pressure();
+    hp.Measure_Temperature();
+    hp.startMeasure();
+    P = hp.hp_sensorData.P;
+    T = hp.hp_sensorData.T;
+    if(P > 0){data_ok = true;}
+  }
+
 
   if(data_ok){
     baro_temp = T;
@@ -982,16 +1001,33 @@ void wakeup_EIC(){
   wakeup_source = WAKEUP_EIC;
 }
 
+void sleep(bool eic){
+
+  if(debug_enabled || is_wsxx){
+    log_flush();
+    WSXX_UART.end();
+    pinDisable(PIN_TX);
+    pinMode(PIN_RX, INPUT_PULLUP);
+    if(eic){
+        attachInterruptWakeup(PIN_RX, wakeup_EIC, FALLING, false);
+    }
+  }
+  deepsleep(false); // no light sleep
+
+  if(debug_enabled || is_wsxx){
+    if(eic){
+      detachInterrupt(PIN_RX);
+    }
+    WSXX_UART.begin(115200*div_cpu); // begin again, because we used the RX pin as wakeup interrupt.
+  }
+}
+
+
 // enable interrupt on uart rx pin and wait for data
 uint32_t sleep_til_serial_data(){
   uint32_t sleepcounter =0;
   //log_i("sleep\r\n"); log_flush();
-  log_flush();
-  WSXX_UART.end();
-  attachInterruptWakeup(PIN_RX, wakeup_EIC, FALLING, false);
-  sleep(false); // false
-  WSXX_UART.begin(115200*div_cpu); // begin again, because we used the RX pin as wakeup interrupt.
-  detachInterrupt(PIN_RX);
+  sleep(true);
   sleepcounter = read_time_counter();
   //log_i("Actual_sleep: ", sleepcounter);
   //log_i("Wakeup_source: "); log_i(wakeup_source_string[wakeup_source]);log_i("\r\n");
@@ -1003,6 +1039,7 @@ uint32_t sleep_til_serial_data(){
 // called after sleep
 void wakeup(){
   // USB->DEVICE.CTRLA.reg |= USB_CTRLA_ENABLE; // Re-enable USB, no need, not working?
+  loopcounter = 0;
   log_i("\r\n########\r\n");
   log_i("Wakeup: ", time()); 
   log_i("Wakeup_source: "); log_i(wakeup_source_string[wakeup_source]);log_i("\r\n");
@@ -1078,6 +1115,11 @@ uint32_t calc_time_to_sleep(){
     if(tts == (uint32_t)-1){ tts=0;}
   }
 
+  if( !tts && loopcounter > 100){
+    log_e("just looping, will sleep\n");
+    tts = 12000;
+  }
+
   return tts;
 }
 
@@ -1093,7 +1135,6 @@ void RTC_Handler(void){
 void go_sleep(){
   uint32_t actual_sleep = 0;
 
-  //fanet.end(); // set RFM95 to sleep
   pinDisable(PIN_V_READ_TRIGGER);
 
 // shut down the USB peripheral
@@ -1138,8 +1179,18 @@ void go_sleep(){
   if(!undervoltage && is_davis6410){ // pulse counting anemometer
     actual_sleep = rtc_sleep_cfg(time_to_sleep);
     setup_pulse_counter(); // need to setup GCLK6 before
+
+    if(debug_enabled){
+      DEBUGSER.end();
+      pinDisable(PIN_TX);
+      pinMode(PIN_RX, INPUT_PULLUP);
+    }
+
     while(wakeup_source != WAKEUP_RTC){ // ignore other wakeups (external pin Interrupt, if configured)
       sleep(false);
+    }
+    if(debug_enabled){
+      DEBUGSER.begin(115200*div_cpu);
     }
     sleeptime_cum += actual_sleep;
     pulsecount = read_pulse_counter();
@@ -1183,10 +1234,7 @@ void go_sleep(){
     
   } else { // no sensor configured
     actual_sleep = rtc_sleep_cfg(time_to_sleep);
-    log_flush();
-    //PM_sleep();
     sleep(false);
-    //PM_wakeup();
     sleeptime_cum += actual_sleep;
   }
 
@@ -1263,6 +1311,7 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
   if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
   if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
+  if(strcmp(settingName,"SKIP_LORA")==0) {skip_lora = true; return 1;}
   if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
   if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return 1;}
   return 0;
@@ -1345,6 +1394,7 @@ bool create_versionfile(char * filename){
         if(baro_chip == BARO_BMP280) { f.println("BMP280");}
         if(baro_chip == BARO_BMP3xx) { f.println("BMP3xx");}
         if(baro_chip == BARO_SPL06) { f.println("SPL06");}
+        if(baro_chip == BARO_HP203B) { f.println("HP203B");}
       if(!f.close()){log_i("file close failed\n");}
       if(fatfs.exists(filename)){ 
       log_i("Version file sucess\n");
@@ -1536,10 +1586,14 @@ bool allowed_to_send_weather(){
     if(is_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
   }
 
+ // if(next_baro_reading){
+ //   log_i("next_baro_reading: ", next_baro_reading);
+ // }
+
   if(!ok){
-    if(last_wsxx_data){
+    //if(last_wsxx_data){
       //log_i("WS80 data age: ", time()- last_ws80_data);
-    }
+   // }
     if(is_gps){
       if(time()-last_gps_valid > 3000){
         log_i("No GPS fix");
@@ -1631,6 +1685,7 @@ void send_msg_info(){
 
 
 bool radio_init(){
+  if(skip_lora){return false;}
     if(radio_sx1276.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE){
       radio_phy = (PhysicalLayer*)&radio_sx1276;
       log_i("Found LoRa SX1276\n");
@@ -1687,10 +1742,14 @@ void setup(){
     settings_ok = parse_file(SETTINGSFILE);
     if(!debug_enabled){
       DEBUGSER.println("Debug messages disabled");
+      DEBUGSER.flush();
+      DEBUGSER.end();
+      pinDisable(PIN_RX);
+      pinDisable(PIN_TX);
     }
   }
 
-    if(radio_init()){
+  if(radio_init()){
     radio_phy->setPacketSentAction(set_fanet_send_flag);
     radio_phy->sleep();
   } else { 
@@ -1713,21 +1772,28 @@ void setup(){
     }
   if(is_baro){
     bool baro_ok = false;
-    if(!baro_ok && bmp280.begin()){ //0x76
-      baro_ok = true;
-      baro_chip = BARO_BMP280;
-      log_i("Baro: BMP280\r\n");
-      bmp280.setOversampling(4);
-    }
-    if(!baro_ok && spl.begin(0x77)){
-      baro_ok = true;
-      baro_chip = BARO_SPL06;
-      log_i("Baro: SPL06\r\n");
-    }
-    if(!baro_ok && bmp3xx.begin_I2C(0x76)){
-      baro_ok = true;
-      baro_chip = BARO_BMP3xx;
-      log_i("Baro: BMP3XX\r\n");
+
+    // ToDo: Crashes with HP203B installed when checking for bmp3xx
+    //if(!baro_ok && bmp280.begin()){ //0x76
+    //  baro_ok = true;
+    //  baro_chip = BARO_BMP280;
+    //  log_i("Baro: BMP280\r\n");
+    //  bmp280.setOversampling(4);
+    //}
+    //if(!baro_ok && spl.begin(0x77)){
+    //  baro_ok = true;
+    //  baro_chip = BARO_SPL06;
+    //  log_i("Baro: SPL06\r\n");
+    //}
+    //if(!baro_ok && bmp3xx.begin_I2C(0x76)){
+    //  baro_ok = true;
+    //  baro_chip = BARO_BMP3xx;
+    //  log_i("Baro: BMP3XX\r\n");
+    //}
+    if(!baro_ok && hp.begin(0x76, OSR_2048)){
+        baro_ok = true;
+        baro_chip = BARO_HP203B;
+        log_i("Baro: HP203B\r\n");
     }
     if(!baro_ok){
       log_e("Baro: not found\r\n");
@@ -1784,13 +1850,14 @@ hw_version = HW_2_0;
 
 void loop(){
 
-
 static uint32_t send_active=0; // if > 0, time() last message was send to tx queue, reset to 0 if send is complete
 static uint32_t last_settings_check = 0; // timee() ckecked if a settings file is present if settings not read yet sucessfully
 
 // print millis as alive counter
 static uint32_t last_call = 0;
 static bool s = false;
+
+loopcounter++;
 
 if(last_call && (time()-last_call > 15)){
   if(!s){led_status(0);}
@@ -1803,6 +1870,9 @@ if(usb_connected && time()-last_call > 500){
   s = led_status(1);
   last_call=time();
 }
+
+//Serial1.print(sleep_allowed); Serial1.print("\t"); Serial1.println(time());
+
 
 
 
