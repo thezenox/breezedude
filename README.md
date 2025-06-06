@@ -3,6 +3,8 @@
 
 Map of almost all wind stations: https://breezedude.de/
 
+For more info and docs see the [Wiki](https://github.com/thezenox/breezedude/wiki)
+
 ----
 <p align="center">
   <img src="hardware/1.jpg" height="450" title="Breezedude Windstation">
@@ -13,8 +15,8 @@ Map of almost all wind stations: https://breezedude.de/
 A low cost FANET wind station using Ecowitt WS80/WS85/WS90 ultrasonic or DAVIS 6410 analog sensor.     
 USB MSC Settings file and Drag&Drop Firmware upgrade. 
 
-- wind sensor: Ecowitt WS80/WS85/WS90 or analog with reed/potentiometer (e.g. DAVIS 6410)
-- pressure sensor: BMP280, BMP3xx or SPL06-001
+- wind sensor: Ecowitt WS80/WS85 or analog with reed/potentiometer (e.g. DAVIS 6410)
+- pressure sensor: HP303B, BMP280, BMP3xx or SPL06-001
 - LoRa module: RFM95W (SX1276), G-NiceRF SX1262, LLCC68
 - antenna connector: SMA
 - microcontroller: SAMD21
@@ -25,8 +27,7 @@ USB MSC Settings file and Drag&Drop Firmware upgrade.
 
 Currently using a 60x60 5V solar panel.     
 Avg. power consumption at 40s send interval @3.7V battery: 1.2mA with analog sensor, 2.22mA with WS80
-
-More info: https://breezedude.de/about.html    
+ 
 Based on SMAD21 using [adafruits samd core](https://github.com/adafruit/ArduinoCore-samd) and itsybitsy M0 variant definitions and [bootloader](https://github.com/adafruit/uf2-samdx1).     
 
 #### Related projects and inspiration:
