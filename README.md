@@ -7,12 +7,13 @@ For more info and docs see the [Wiki](https://github.com/thezenox/breezedude/wik
 
 ----
 <p align="center">
+  <
   <img src="hardware/1.jpg" height="450" title="Breezedude Windstation">
   <img src="hardware/2.jpg" height="450" alt="Breezedude Windstation"> <br>
-  <img src="hardware/mini_v2.jpg" height="250" alt="Breezedude PCB">
+  <img src="https://github.com/user-attachments/assets/32b3c55d-bf5a-4a9c-9b3f-163092238a7e" width=500><br>
 </p>
 
-A low cost FANET wind station using Ecowitt WS80/WS85/WS90 ultrasonic or DAVIS 6410 analog sensor.     
+A low cost FANET wind station using Ecowitt WS80/WS85 ultrasonic or DAVIS 6410 analog sensor.     
 USB MSC Settings file and Drag&Drop Firmware upgrade. 
 
 - wind sensor: Ecowitt WS80/WS85 or analog with reed/potentiometer (e.g. DAVIS 6410)
@@ -34,3 +35,9 @@ Based on SMAD21 using [adafruits samd core](https://github.com/adafruit/ArduinoC
 * https://github.com/gereic/GXAirCom
 * https://github.com/jgromes/RadioLib
 * https://github.com/3s1d/fanet-stm32
+
+
+
+If you like this project
+
+<a href="https://www.buymeacoffee.com/thezenox" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Landingbeer" style="height: 60px !important;width: 200px !important;" ></a>
